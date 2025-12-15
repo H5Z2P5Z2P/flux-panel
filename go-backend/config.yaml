@@ -1,0 +1,12 @@
+server:
+  port: 6365
+
+database:
+  host: "127.0.0.1"
+  port: 3306
+  name: "flux_panel"
+  user: "root"
+  password: "password"
+
+jwt-secret: "your-secret-key-123"
+log-dir: "./logs"
