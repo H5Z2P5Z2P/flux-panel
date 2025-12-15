@@ -27,8 +27,8 @@ type TrafficReportItem struct {
 }
 
 func SetHTTPReportURL(addr string, secret string) {
-	httpReportURL = "http://" + addr + "/flow/upload?secret=" + secret
-	configReportURL = "http://" + addr + "/flow/config?secret=" + secret
+	httpReportURL = "https://" + addr + "/flow/upload?secret=" + secret
+	configReportURL = "https://" + addr + "/flow/config?secret=" + secret
 
 	// 创建 AES 加密器
 	var err error

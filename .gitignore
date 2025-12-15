@@ -257,3 +257,7 @@ gitee/
 doraemon.jks
 device.id
 commit.sh
+
+# build
+go-gost/agent
+go-gost/agent-linux-amd64
