@@ -2,10 +2,10 @@ version: '3.8'
 
 services:
   backend:
-    build: 
+    build:
       context: ./go-backend
       dockerfile: Dockerfile
-    image: flux-panel-backend:latest
+    image: huaihuai0406/flux-panel-backend:latest
     container_name: flux-panel-backend
     restart: always
     environment:
@@ -16,7 +16,7 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     ports:
-      - "6365:6365"
+      - "127.0.0.1:6365:6365"
     networks:
       - flux-network
 
@@ -24,11 +24,11 @@ services:
     build:
       context: ./vite-frontend
       dockerfile: Dockerfile
-    image: flux-panel-frontend:latest
+    image: huaihuai0406/flux-panel-frontend:latest
     container_name: flux-panel-frontend
     restart: always
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     depends_on:
       - backend
     networks:
