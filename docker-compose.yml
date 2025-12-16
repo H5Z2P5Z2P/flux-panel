@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: ./go-backend
+      dockerfile: Dockerfile
+    image: flux-panel-backend:latest
+    container_name: flux-panel-backend
+    restart: always
+    environment:
+      - DB_TYPE=sqlite
+      - DB_NAME=/app/data/flux.db
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    ports:
+      - "6365:6365"
+    networks:
+      - flux-network
+
+  frontend:
+    build:
+      context: ./vite-frontend
+      dockerfile: Dockerfile
+    image: flux-panel-frontend:latest
+    container_name: flux-panel-frontend
+    restart: always
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    networks:
+      - flux-network
+
+networks:
+  flux-network:
+    driver: bridge
