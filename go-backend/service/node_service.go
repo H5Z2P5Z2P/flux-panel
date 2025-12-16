@@ -133,7 +133,7 @@ func (s *NodeService) GetInstallCommand(id int64) *result.Result {
 	if node.Secret != nil {
 		secret = *node.Secret
 	}
-	cmd := fmt.Sprintf("curl -L https://github.com/bqlpfy/flux-panel/releases/download/1.4.3/install.sh -o ./install.sh && chmod +x ./install.sh && ./install.sh -a %s -s %s", serverAddr, secret)
+	cmd := fmt.Sprintf("curl -L https://minio.uily.de/files/flux-agent/install.sh -o ./install.sh && chmod +x ./install.sh && ./install.sh -a %s -s %s", serverAddr, secret)
 
 	return result.Ok(cmd)
 }

@@ -777,9 +777,29 @@ export default function ForwardPage() {
   // 复制到剪贴板
   const copyToClipboard = async (text: string, label: string = '内容') => {
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for non-secure context
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        textArea.style.top = "0";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          document.execCommand('copy');
+        } catch (err) {
+          console.error('Fallback copy failed', err);
+          throw new Error('Fallback copy failed');
+        }
+        document.body.removeChild(textArea);
+      }
       toast.success(`已复制${label}`);
     } catch (error) {
+      console.error('复制失败:', error);
       toast.error('复制失败');
     }
   };
@@ -1228,7 +1248,10 @@ export default function ForwardPage() {
                 className={`cursor-pointer px-2 py-1 bg-default-50 dark:bg-default-100/50 rounded border border-default-200 dark:border-default-300 transition-colors duration-200 ${
                   hasMultipleAddresses(forward.inIp) ? 'hover:bg-default-100 dark:hover:bg-default-200/50' : ''
                 }`}
-                onClick={() => showAddressModal(forward.inIp, forward.inPort, '入口端口')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  showAddressModal(forward.inIp, forward.inPort, '入口端口');
+                }}
                 title={formatInAddress(forward.inIp, forward.inPort)}
               >
                 <div className="flex items-center justify-between">
@@ -1250,7 +1273,10 @@ export default function ForwardPage() {
                 className={`cursor-pointer px-2 py-1 bg-default-50 dark:bg-default-100/50 rounded border border-default-200 dark:border-default-300 transition-colors duration-200 ${
                   hasMultipleAddresses(forward.remoteAddr) ? 'hover:bg-default-100 dark:hover:bg-default-200/50' : ''
                 }`}
-                onClick={() => showAddressModal(forward.remoteAddr, null, '目标地址')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  showAddressModal(forward.remoteAddr, null, '目标地址');
+                }}
                 title={formatRemoteAddress(forward.remoteAddr)}
               >
                 <div className="flex items-center justify-between">
