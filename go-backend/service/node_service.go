@@ -10,6 +10,7 @@ import (
 	"go-backend/model/dto"
 	"go-backend/result"
 	"go-backend/utils"
+	"go-backend/websocket"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -24,6 +25,7 @@ func (s *NodeService) CreateNode(dto dto.NodeDto) *result.Result {
 		return result.Err(-1, err.Error())
 	}
 
+	secret := strings.ReplaceAll(uuid.New().String(), "-", "")
 	node := model.Node{
 		Name:        dto.Name,
 		Ip:          dto.Ip,
@@ -33,7 +35,7 @@ func (s *NodeService) CreateNode(dto dto.NodeDto) *result.Result {
 		Http:        dto.Http,
 		Tls:         dto.Tls,
 		Socks:       dto.Socks,
-		Secret:      strings.ReplaceAll(uuid.New().String(), "-", ""),
+		Secret:      &secret,
 		Status:      0, // Active
 		CreatedTime: time.Now().UnixMilli(),
 		UpdatedTime: time.Now().UnixMilli(),
@@ -49,7 +51,7 @@ func (s *NodeService) GetAllNodes() *result.Result {
 	var nodes []model.Node
 	global.DB.Find(&nodes)
 	for i := range nodes {
-		nodes[i].Secret = "" // Hide secret
+		nodes[i].Secret = nil // Hide secret
 	}
 	return result.Ok(nodes)
 }
@@ -66,6 +68,10 @@ func (s *NodeService) UpdateNode(dto dto.NodeUpdateDto) *result.Result {
 		}
 		node.PortSta = *dto.PortSta
 		node.PortEnd = *dto.PortEnd
+	}
+
+	if err := s.syncNodeProtocolIfNeeded(&node, dto); err != nil {
+		return result.Err(-1, err.Error())
 	}
 
 	node.Name = dto.Name
@@ -123,7 +129,11 @@ func (s *NodeService) GetInstallCommand(id int64) *result.Result {
 	}
 
 	serverAddr := utils.ProcessServerAddress(config.Value)
-	cmd := fmt.Sprintf("curl -L https://github.com/bqlpfy/flux-panel/releases/download/1.4.3/install.sh -o ./install.sh && chmod +x ./install.sh && ./install.sh -a %s -s %s", serverAddr, node.Secret)
+	secret := ""
+	if node.Secret != nil {
+		secret = *node.Secret
+	}
+	cmd := fmt.Sprintf("curl -L https://github.com/bqlpfy/flux-panel/releases/download/1.4.3/install.sh -o ./install.sh && chmod +x ./install.sh && ./install.sh -a %s -s %s", serverAddr, secret)
 
 	return result.Ok(cmd)
 }
@@ -134,6 +144,34 @@ func validatePortRange(start, end int) error {
 	}
 	if end < start {
 		return fmt.Errorf("结束端口不能小于起始端口")
+	}
+	return nil
+}
+
+func (s *NodeService) syncNodeProtocolIfNeeded(node *model.Node, req dto.NodeUpdateDto) error {
+	if node.Status != 1 {
+		return nil
+	}
+
+	httpChanged := req.Http != node.Http
+	tlsChanged := req.Tls != node.Tls
+	socksChanged := req.Socks != node.Socks
+
+	if !httpChanged && !tlsChanged && !socksChanged {
+		return nil
+	}
+
+	payload := map[string]interface{}{
+		"http":  req.Http,
+		"tls":   req.Tls,
+		"socks": req.Socks,
+	}
+	res := websocket.SendMsg(node.ID, payload, "SetProtocol")
+	if res == nil {
+		return fmt.Errorf("同步节点协议失败: 节点无响应")
+	}
+	if res.Msg != "OK" {
+		return fmt.Errorf("同步节点协议失败: %s", res.Msg)
 	}
 	return nil
 }

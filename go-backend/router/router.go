@@ -29,6 +29,8 @@ func InitRouter() *gin.Engine {
 		nodeController := new(controller.NodeController)
 		tunnelController := new(controller.TunnelController)
 		forwardController := new(controller.ForwardController)
+		openAPIController := new(controller.OpenAPIController)
+		speedLimitController := new(controller.SpeedLimitController)
 
 		// Public Routes
 		api.POST("/user/login", userController.Login)
@@ -45,6 +47,8 @@ func InitRouter() *gin.Engine {
 				user.POST("/update", userController.Update) // Check permission inside controller/service
 				user.POST("/updatePassword", userController.UpdatePassword)
 				user.POST("/delete", middleware.RequireRole(0), userController.Delete)
+				user.POST("/package", userController.Package)
+				user.POST("/reset", middleware.RequireRole(0), userController.Reset)
 			}
 
 			// Node
@@ -64,6 +68,18 @@ func InitRouter() *gin.Engine {
 				tunnel.POST("/list", tunnelController.List) // All for admin, authorized for user (impl in service)
 				tunnel.POST("/update", middleware.RequireRole(0), tunnelController.Update)
 				tunnel.POST("/delete", middleware.RequireRole(0), tunnelController.Delete)
+
+				// UserTunnel Management (Admin only)
+				tunnel.POST("/user/assign", middleware.RequireRole(0), tunnelController.AssignUserTunnel)
+				tunnel.POST("/user/list", middleware.RequireRole(0), tunnelController.ListUserTunnels)
+				tunnel.POST("/user/remove", middleware.RequireRole(0), tunnelController.RemoveUserTunnel)
+				tunnel.POST("/user/update", middleware.RequireRole(0), tunnelController.UpdateUserTunnel)
+
+				// User visible tunnels (All users)
+				tunnel.POST("/user/tunnel", tunnelController.GetUserTunnels)
+
+				// Tunnel Diagnose (Admin only)
+				tunnel.POST("/diagnose", middleware.RequireRole(0), tunnelController.DiagnoseTunnel)
 			}
 
 			// Forward
@@ -71,17 +87,55 @@ func InitRouter() *gin.Engine {
 			{
 				forward.POST("/create", forwardController.Create)
 				forward.POST("/list", forwardController.List)
+				forward.POST("/update", forwardController.Update)
 				forward.POST("/delete", forwardController.Delete)
+				forward.POST("/pause", forwardController.Pause)
+				forward.POST("/resume", forwardController.Resume)
+				forward.POST("/force-delete", forwardController.ForceDelete)
+				forward.POST("/diagnose", forwardController.Diagnose)
+				forward.POST("/update-order", forwardController.UpdateOrder)
 			}
 
 			// System Info (WebSocket) - Auth handled internally
 			// auth.GET("/system-info", websocket.HandleWebSocket)
 		}
 
+		// Speed Limit (Admin only)
+		speedLimit := api.Group("/speed-limit")
+		speedLimit.Use(middleware.Auth())
+		speedLimit.Use(middleware.RequireRole(0))
+		{
+			speedLimit.POST("/create", speedLimitController.Create)
+			speedLimit.POST("/list", speedLimitController.List)
+			speedLimit.POST("/update", speedLimitController.Update)
+			speedLimit.POST("/delete", speedLimitController.Delete)
+			speedLimit.POST("/tunnels", speedLimitController.Tunnels)
+		}
+
 		// WebSocket (Public endpoint, auth inside)
 		api.GET("/system-info", func(c *gin.Context) {
 			websocket.HandleWebSocket(c)
 		})
+
+		// Public Settings (e.g. site title, captcha enabled)
+		// No Auth needed for list/get? Java Controller uses @LogAnnotation but no @RequireRole for Get?
+		// Java: @PostMapping("/list") public R getConfigs() -> No role check.
+		// Java: @PostMapping("/get") public R getConfigByName(...) -> No role check.
+		configGroup := api.Group("/config")
+		{
+			configGroup.POST("/list", controller.ViteConfig.GetConfigs)
+			configGroup.POST("/get", controller.ViteConfig.GetConfigByName)
+
+			// Admin only
+			configGroup.POST("/update", middleware.Auth(), controller.ViteConfig.UpdateConfigs)
+			configGroup.POST("/update-single", middleware.Auth(), controller.ViteConfig.UpdateConfig)
+		}
+
+		// Open API
+		openAPI := api.Group("/open_api")
+		{
+			openAPI.GET("/sub_store", openAPIController.SubStore)
+		}
 
 		// Captcha
 		captcha := api.Group("/captcha")
@@ -92,6 +146,17 @@ func InitRouter() *gin.Engine {
 			captcha.POST("/verify", c.Verify)
 		}
 	}
+
+	// Flow routes (Attached to root, not /api/v1)
+	flowController := controller.FlowController{}
+	r.POST("/flow/config", flowController.Config)
+	r.POST("/flow/upload", flowController.Upload)
+	r.POST("/flow/test", flowController.Test)
+
+	// WebSocket Routes (Compatible with both /system-info and /api/v1/system-info)
+	r.GET("/system-info", func(c *gin.Context) {
+		websocket.HandleWebSocket(c)
+	})
 
 	return r
 }

@@ -8,10 +8,11 @@ import (
 	"go-backend/model"
 	"go-backend/model/dto"
 	"go-backend/result"
+	"go-backend/utils"
 
 	"go-backend/websocket"
 
-	"gorm.io/gorm"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type TunnelService struct{}
@@ -33,15 +34,15 @@ func (s *TunnelService) CreateTunnel(dto dto.TunnelDto) *result.Result {
 		if dto.OutNodeId == nil {
 			return result.Err(-1, "出口节点不能为空")
 		}
-		if dto.InNodeId == *dto.OutNodeId {
-			return result.Err(-1, "隧道转发模式下，入口和出口不能是同一个节点")
-		}
 	}
 
 	// 3. Validate InNode
 	var inNode model.Node
 	if err := global.DB.First(&inNode, dto.InNodeId).Error; err != nil {
 		return result.Err(-1, "入口节点不存在")
+	}
+	if inNode.Status != 1 {
+		return result.Err(-1, "入口节点当前离线，请确保节点正常运行")
 	}
 
 	tunnel := model.Tunnel{
@@ -71,10 +72,10 @@ func (s *TunnelService) CreateTunnel(dto dto.TunnelDto) *result.Result {
 
 	// Protocol
 	if dto.Type == 2 {
-		tunnel.Protocol = "tls"
-		if dto.Protocol != "" {
-			tunnel.Protocol = dto.Protocol
+		if dto.Protocol == "" {
+			return result.Err(-1, "协议类型必选")
 		}
+		tunnel.Protocol = dto.Protocol
 	}
 
 	// 4. Setup Out Node
@@ -82,9 +83,15 @@ func (s *TunnelService) CreateTunnel(dto dto.TunnelDto) *result.Result {
 		tunnel.OutNodeId = dto.InNodeId
 		tunnel.OutIp = inNode.ServerIp
 	} else {
+		if dto.InNodeId == *dto.OutNodeId {
+			return result.Err(-1, "隧道转发模式下，入口和出口不能是同一个节点")
+		}
 		var outNode model.Node
 		if err := global.DB.First(&outNode, *dto.OutNodeId).Error; err != nil {
 			return result.Err(-1, "出口节点不存在")
+		}
+		if outNode.Status != 1 {
+			return result.Err(-1, "出口节点当前离线，请确保节点正常运行")
 		}
 		tunnel.OutNodeId = *dto.OutNodeId
 		tunnel.OutIp = outNode.ServerIp
@@ -101,49 +108,121 @@ func (s *TunnelService) CreateTunnel(dto dto.TunnelDto) *result.Result {
 	return result.Ok("隧道创建成功")
 }
 
+// UserTunnel 获取当前用户可用的隧道列表 (API: /api/v1/tunnel/user/tunnel)
+func (s *TunnelService) UserTunnel(userId int64) *result.Result {
+	var user model.User
+	if err := global.DB.First(&user, userId).Error; err != nil {
+		return result.Err(-1, "用户不存在")
+	}
+
+	var tunnels []model.Tunnel
+
+	if user.RoleId == 0 { // Admin
+		global.DB.Where("status = 1").Find(&tunnels)
+	} else {
+		// 1. Get User Permissions
+		var userTunnels []model.UserTunnel
+		global.DB.Where("user_id = ? AND status = 1", userId).Find(&userTunnels)
+
+		for _, ut := range userTunnels {
+			if ut.ExpTime > 0 && ut.ExpTime <= time.Now().UnixMilli() {
+				continue // Expired
+			}
+			var t model.Tunnel
+			// Check Tunnel Status
+			if err := global.DB.Where("id = ? AND status = 1", ut.TunnelId).First(&t).Error; err == nil {
+				tunnels = append(tunnels, t)
+			}
+		}
+	}
+
+	var response []dto.UserTunnelResponseDto
+	for _, tunnel := range tunnels {
+		var node model.Node
+		if err := global.DB.First(&node, tunnel.InNodeId).Error; err != nil {
+			continue
+		}
+
+		dto := dto.UserTunnelResponseDto{
+			ID:            tunnel.ID,
+			Name:          tunnel.Name,
+			Ip:            tunnel.InIp, // Or node.Ip? Java response uses "ip": "45.8..." which matches InIp usually
+			Type:          tunnel.Type,
+			Protocol:      tunnel.Protocol,
+			InNodePortSta: node.PortSta,
+			InNodePortEnd: node.PortEnd,
+		}
+		response = append(response, dto)
+	}
+
+	return result.Ok(response)
+}
+
 func (s *TunnelService) GetAllTunnels() *result.Result {
 	var tunnels []model.Tunnel
 	global.DB.Find(&tunnels)
 	return result.Ok(tunnels)
 }
 
-func (s *TunnelService) UpdateTunnel(dto dto.TunnelUpdateDto) *result.Result {
+func (s *TunnelService) UpdateTunnel(req dto.TunnelUpdateDto) *result.Result {
 	var tunnel model.Tunnel
-	if err := global.DB.First(&tunnel, dto.ID).Error; err != nil {
+	if err := global.DB.First(&tunnel, req.ID).Error; err != nil {
 		return result.Err(-1, "隧道不存在")
 	}
 
 	var count int64
-	global.DB.Model(&model.Tunnel{}).Where("name = ? AND id != ?", dto.Name, dto.ID).Count(&count)
+	global.DB.Model(&model.Tunnel{}).Where("name = ? AND id != ?", req.Name, req.ID).Count(&count)
 	if count > 0 {
 		return result.Err(-1, "隧道名称已存在")
 	}
 
-	tunnel.Name = dto.Name
-	tunnel.Flow = dto.Flow
-	tunnel.Protocol = dto.Protocol
-	tunnel.InterfaceName = dto.InterfaceName
-	tunnel.TcpListenAddr = dto.TcpListenAddr
-	tunnel.UdpListenAddr = dto.UdpListenAddr
-	if !dto.TrafficRatio.IsZero() {
-		f, _ := dto.TrafficRatio.Float64()
+	// Check for critical changes
+	criticalChange := false
+	if tunnel.TcpListenAddr != req.TcpListenAddr ||
+		tunnel.UdpListenAddr != req.UdpListenAddr ||
+		tunnel.Protocol != req.Protocol ||
+		tunnel.InterfaceName != req.InterfaceName {
+		criticalChange = true
+	}
+
+	tunnel.Name = req.Name
+	tunnel.Flow = req.Flow
+	tunnel.Protocol = req.Protocol
+	tunnel.InterfaceName = req.InterfaceName
+	tunnel.TcpListenAddr = req.TcpListenAddr
+	tunnel.UdpListenAddr = req.UdpListenAddr
+	if !req.TrafficRatio.IsZero() {
+		f, _ := req.TrafficRatio.Float64()
 		tunnel.TrafficRatio = f
 	}
 	tunnel.UpdatedTime = time.Now().UnixMilli()
 
-	err := global.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(&tunnel).Error; err != nil {
-			return err
-		}
-		// TODO: Sync updates to Forward?
-		// Java: forwardService.updateForward(...) for each forward.
-		// For now simple update DB is MVP.
-		return nil
-	})
-
-	if err != nil {
+	// Update DB
+	if err := global.DB.Save(&tunnel).Error; err != nil {
 		return result.Err(-1, "隧道更新失败: "+err.Error())
 	}
+
+	// Sync Forwards if needed
+	if criticalChange {
+		var forwards []model.Forward
+		global.DB.Where("tunnel_id = ?", tunnel.ID).Find(&forwards)
+		for _, f := range forwards {
+			fDto := dto.ForwardDto{
+				Name:          f.Name,
+				TunnelId:      f.TunnelId,
+				InPort:        &f.InPort,
+				RemoteAddr:    f.RemoteAddr,
+				InterfaceName: f.InterfaceName,
+				Strategy:      f.Strategy,
+			}
+			// Use admin role (0) to bypass ownership check, acting as system sync
+			res := Forward.UpdateForward(f.ID, fDto, &utils.UserClaims{RoleId: 0, User: f.UserName, RegisteredClaims: jwt.RegisteredClaims{Subject: fmt.Sprintf("%d", f.UserId)}})
+			if res.Code != 0 {
+				return result.Err(-1, fmt.Sprintf("隧道更新成功，但在同步转发 %s 时失败: %s", f.Name, res.Msg))
+			}
+		}
+	}
+
 	return result.Ok("隧道更新成功")
 }
 func (s *TunnelService) DiagnoseTunnel(tunnelId int64) *result.Result {
@@ -162,7 +241,7 @@ func (s *TunnelService) DiagnoseTunnel(tunnelId int64) *result.Result {
 	if tunnel.Type == 1 {
 		// Port Forward: Check connect to google? Or just ping self?
 		// Java: tcp ping www.google.com:443 from InNode
-		res := s.performTcpPing(&inNode, "www.google.com", 443, "入口->外网")
+		res := s.PerformTcpPing(&inNode, "www.google.com", 443, "入口->外网")
 		results = append(results, res)
 	} else {
 		// Tunnel Forward
@@ -174,11 +253,11 @@ func (s *TunnelService) DiagnoseTunnel(tunnelId int64) *result.Result {
 		outPort := s.getOutNodeTcpPort(tunnel.ID)
 
 		// In -> Out
-		res1 := s.performTcpPing(&inNode, outNode.ServerIp, outPort, "入口->出口")
+		res1 := s.PerformTcpPing(&inNode, outNode.ServerIp, outPort, "入口->出口")
 		results = append(results, res1)
 
 		// Out -> External
-		res2 := s.performTcpPing(&outNode, "www.google.com", 443, "出口->外网")
+		res2 := s.PerformTcpPing(&outNode, "www.google.com", 443, "出口->外网")
 		results = append(results, res2)
 	}
 
@@ -196,7 +275,7 @@ func (s *TunnelService) DiagnoseTunnel(tunnelId int64) *result.Result {
 	return result.Ok(report)
 }
 
-func (s *TunnelService) performTcpPing(node *model.Node, targetIp string, port int, desc string) map[string]interface{} {
+func (s *TunnelService) PerformTcpPing(node *model.Node, targetIp string, port int, desc string) map[string]interface{} {
 	payload := map[string]interface{}{
 		"ip":      targetIp,
 		"port":    port,

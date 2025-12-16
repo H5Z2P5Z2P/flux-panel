@@ -1,0 +1,217 @@
+{
+    "code": 0,
+    "msg": "操作成功",
+    "ts": 1765871596597,
+    "data": {
+        "userInfo": {
+            "id": 1,
+            "name": null,
+            "user": "new_admin_user",
+            "status": 1,
+            "flow": 99999,
+            "inFlow": 0,
+            "outFlow": 0,
+            "num": 99999,
+            "expTime": 2727251700000,
+            "flowResetTime": 1,
+            "createdTime": 1748914865000,
+            "updatedTime": 1765871586980
+        },
+        "tunnelPermissions": [],
+        "forwards": [],
+        "statisticsFlows": [
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "15:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "14:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "13:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "12:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "11:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "10:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "09:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "08:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "07:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "06:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "05:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "04:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "03:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "02:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "01:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "00:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "23:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "22:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "21:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "20:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "19:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "18:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "17:00",
+                "createdTime": null
+            },
+            {
+                "id": null,
+                "userId": 1,
+                "flow": 0,
+                "totalFlow": 0,
+                "time": "16:00",
+                "createdTime": null
+            }
+        ]
+    }
+}

@@ -18,3 +18,23 @@ type ForwardUpdateDto struct {
 	InterfaceName string `json:"interfaceName"`
 	Strategy      string `json:"strategy"`
 }
+
+type ForwardResponseDto struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	InPort        int    `json:"inPort"`
+	RemoteAddr    string `json:"remoteAddr"`
+	Status        int    `json:"status"`
+	CreatedTime   int64  `json:"createdTime"`
+	UpdatedTime   int64  `json:"updatedTime"`
+	TunnelName    string `json:"tunnelName"`
+	InIp          string `json:"inIp"`
+	UserName      string `json:"userName"`
+	UserId        int64  `json:"userId"`
+	TunnelId      int64  `json:"tunnelId"`
+	InFlow        int64  `json:"inFlow"`
+	OutFlow       int64  `json:"outFlow"`
+	Strategy      string `json:"strategy"`
+	Inx           int    `json:"inx"`
+	InterfaceName string `json:"interfaceName"`
+}

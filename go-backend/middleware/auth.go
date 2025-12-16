@@ -21,14 +21,14 @@ func Auth() gin.HandlerFunc {
 			return
 		}
 
+		var tokenString string
 		parts := strings.SplitN(authHeader, " ", 2)
-		if !(len(parts) == 2 && parts[0] == "Bearer") {
-			c.JSON(http.StatusOK, result.Err(-1, "无效的Token格式"))
-			c.Abort()
-			return
+		if len(parts) == 2 && parts[0] == "Bearer" {
+			tokenString = parts[1]
+		} else {
+			// Fallback: Treat entire header as token (Java parity)
+			tokenString = authHeader
 		}
-
-		tokenString := parts[1]
 		claims := &utils.UserClaims{}
 
 		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {

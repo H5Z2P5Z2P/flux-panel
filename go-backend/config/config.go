@@ -18,6 +18,7 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
+	Type     string // mysql or sqlite
 	Host     string
 	Port     int
 	Name     string
@@ -33,6 +34,7 @@ func InitConfig() {
 	viper.SetDefault("log-dir", "./logs")
 
 	// 数据库默认值(优先读取环境变量)
+	viper.BindEnv("database.type", "DB_TYPE")
 	viper.BindEnv("database.host", "DB_HOST")
 	viper.BindEnv("database.name", "DB_NAME")
 	viper.BindEnv("database.user", "DB_USER")
@@ -59,6 +61,7 @@ func InitConfig() {
 	AppConfig.JwtSecret = viper.GetString("jwt-secret")
 	AppConfig.LogDir = viper.GetString("log-dir")
 
+	AppConfig.Database.Type = viper.GetString("database.type")
 	AppConfig.Database.Host = viper.GetString("database.host")
 	AppConfig.Database.Port = viper.GetInt("database.port")
 	AppConfig.Database.Name = viper.GetString("database.name")

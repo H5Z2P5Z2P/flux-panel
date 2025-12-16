@@ -62,3 +62,17 @@ func (u *UserController) UpdatePassword(c *gin.Context) {
 	claims := c.MustGet("claims").(*utils.UserClaims)
 	c.JSON(http.StatusOK, service.User.UpdatePassword(dto, claims))
 }
+
+func (u *UserController) Package(c *gin.Context) {
+	claims := c.MustGet("claims").(*utils.UserClaims)
+	c.JSON(http.StatusOK, service.User.GetUserPackageInfo(claims))
+}
+
+func (u *UserController) Reset(c *gin.Context) {
+	var dto dto.ResetFlowDto
+	if err := c.ShouldBindJSON(&dto); err != nil {
+		service.ResponseError(c, -1, "参数错误: "+err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, service.User.ResetFlow(dto))
+}

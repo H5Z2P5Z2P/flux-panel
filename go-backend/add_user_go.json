@@ -1,0 +1,22 @@
+{
+    "code": 0,
+    "msg": "操作成功",
+    "ts": 1765873279702,
+    "data": [
+        {
+            "id": 2,
+            "createdTime": 1765873279673,
+            "updatedTime": 1765873279673,
+            "status": 1,
+            "user": "123",
+            "pwd": "e10adc3949ba59abbe56e057f20f883e",
+            "role_id": 1,
+            "expTime": 0,
+            "flow": 0,
+            "inFlow": 0,
+            "outFlow": 0,
+            "num": 0,
+            "flowResetTime": 0
+        }
+    ]
+}

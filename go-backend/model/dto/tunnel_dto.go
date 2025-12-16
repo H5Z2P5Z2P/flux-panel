@@ -35,3 +35,13 @@ type TunnelListDto struct {
 	InNodePortSta int    `json:"inNodePortSta"`
 	InNodePortEnd int    `json:"inNodePortEnd"`
 }
+
+type UserTunnelResponseDto struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	Ip            string `json:"ip"`
+	InNodePortSta int    `json:"inNodePortSta"`
+	InNodePortEnd int    `json:"inNodePortEnd"`
+	Type          int    `json:"type"`
+	Protocol      string `json:"protocol"`
+}

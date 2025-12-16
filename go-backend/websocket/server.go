@@ -6,14 +6,17 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"go-backend/config"
 	"go-backend/global"
 	"go-backend/model"
 	"go-backend/model/dto"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -62,8 +65,7 @@ func (m *WSManager) Register(client *Client) {
 		m.NodeSessions[nodeId] = client
 		// Broadcast Status Online
 		m.broadcastStatus(client.ID, 1)
-		// Update DB Status
-		go updateNodeStatus(nodeId, 1, client.Version)
+		// Update DB Status - Handled by HandleWebSocket detailed update
 	} else {
 		m.AdminSessions[client] = true
 	}
@@ -104,15 +106,34 @@ func (m *WSManager) broadcastStatus(id string, status int) {
 	}
 }
 
-func updateNodeStatus(nodeId int64, status int, version string) {
+func updateNodeStatusDetail(nodeId int64, status int, version, httpStr, tlsStr, socksStr string) {
 	var node model.Node
 	if err := global.DB.First(&node, nodeId).Error; err == nil {
 		node.Status = status
 		if version != "" {
-			node.Version = version
+			node.Version = &version
+		}
+		if httpStr != "" {
+			if p, err := strconv.Atoi(httpStr); err == nil {
+				node.Http = p
+			}
+		}
+		if tlsStr != "" {
+			if p, err := strconv.Atoi(tlsStr); err == nil {
+				node.Tls = p
+			}
+		}
+		if socksStr != "" {
+			if p, err := strconv.Atoi(socksStr); err == nil {
+				node.Socks = p
+			}
 		}
 		global.DB.Save(&node)
 	}
+}
+
+func updateNodeStatus(nodeId int64, status int, version string) {
+	updateNodeStatusDetail(nodeId, status, version, "", "", "")
 }
 
 func HandleWebSocket(c *gin.Context) {
@@ -121,36 +142,59 @@ func HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	id := c.Query("id")
+	// Query params from handshake
+	idParam := c.Query("id") // Likely empty for Node
 	msgType := c.Query("type")
 	secret := c.Query("secret")
 	version := c.Query("version")
 
-	// Validate Node Secret
+	clientId := idParam
+
+	// Validate Node
 	if msgType == "1" {
-		nodeId, err := strconv.ParseInt(id, 10, 64)
-		if err != nil {
+		// Java logic: Node lookup by secret
+		var node model.Node
+		if err := global.DB.Where("secret = ?", secret).First(&node).Error; err != nil {
+			conn.Close() // Not found or invalid secret
+			return
+		}
+		// Secret is valid if found
+		clientId = strconv.FormatInt(node.ID, 10)
+	} else {
+		// Admin validation (Type != 1)
+		// Java: WebSocketInterceptor validates token
+		if secret == "" {
 			conn.Close()
 			return
 		}
-		var node model.Node
-		if err := global.DB.First(&node, nodeId).Error; err != nil {
-			conn.Close() // Node not found
+		// Inline JWT Validation to avoid import cycle with utils -> service -> websocket
+		token, err := jwt.Parse(secret, func(token *jwt.Token) (interface{}, error) {
+			return []byte(config.AppConfig.JwtSecret), nil
+		})
+
+		if err != nil || !token.Valid {
+			conn.Close()
 			return
 		}
-		if node.Secret != secret {
-			conn.Close() // Invalid Secret
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			conn.Close()
 			return
 		}
-	} else {
-		// Admin validation?
-		// For now simple admin check or assume internal trust if no better auth mechanism provided in specs.
-		// Java used session attributes via interceptor?
-		// We can add simple token check here if passed in query.
+
+		// Extract Subject (UserId)
+		sub, _ := claims.GetSubject()
+		if sub == "" {
+			// Fallback: Check "id" claim if any? Utils uses StandardClaims Subject.
+			conn.Close()
+			return
+		}
+		clientId = sub
 	}
 
 	client := &Client{
-		ID:      id,
+		ID:      clientId,
 		Type:    msgType,
 		Conn:    conn,
 		Secret:  secret,
@@ -162,7 +206,19 @@ func HandleWebSocket(c *gin.Context) {
 		client.AES = NewAESCrypto(secret)
 	}
 
+	// Register Client
 	Manager.Register(client)
+
+	// Update Node Status with Ports
+	if msgType == "1" {
+		httpPortStr := c.Query("http")
+		tlsPortStr := c.Query("tls")
+		socksPortStr := c.Query("socks")
+
+		nodeId, _ := strconv.ParseInt(clientId, 10, 64)
+		go updateNodeStatusDetail(nodeId, 1, version, httpPortStr, tlsPortStr, socksPortStr)
+	}
+
 	go client.ReadPump()
 }
 
@@ -229,6 +285,13 @@ func (c *Client) handleMessage(payload []byte) {
 
 	// 2. Broadcast Info (if Node)
 	if c.Type == "1" {
+		// Heartbeat / Status Update Response
+		if strPayload := string(payload); len(strPayload) > 0 {
+			if strings.Contains(strPayload, "memory_usage") {
+				c.SendEncrypted(`{"type":"call"}`)
+			}
+		}
+
 		// Java: If type=1, broadcast {id, type:info, data: payload} to admins
 		msg := map[string]interface{}{
 			"id":   c.ID,
@@ -273,10 +336,11 @@ func (c *Client) SendEncrypted(msg string) error {
 }
 
 // SendMsg to Node with Timeout
-func SendMsg(nodeId int64, msg interface{}, msgType string) *dto.GostDto {
-	Manager.mu.Lock()
+func SendMsg(nodeId int64, data interface{}, msgType string) *dto.GostDto {
+	// Find Client
+	Manager.mu.RLock()
 	client, ok := Manager.NodeSessions[nodeId]
-	Manager.mu.Unlock()
+	Manager.mu.RUnlock()
 
 	if !ok || client == nil || !client.Valid {
 		return &dto.GostDto{Msg: "节点不在线"}
@@ -284,36 +348,35 @@ func SendMsg(nodeId int64, msg interface{}, msgType string) *dto.GostDto {
 
 	requestId := uuid.New().String()
 
-	// Create Request Payload
-	payload := dto.CommandMessage{
-		Type:      msgType,
-		Data:      msg,
-		RequestId: requestId,
+	// Construct Message
+	// Java puts requestId at root: {type:..., data:..., requestId:...}
+	msg := map[string]interface{}{
+		"type":      msgType,
+		"data":      data,
+		"requestId": requestId,
 	}
-	jsonPayload, _ := json.Marshal(payload)
 
-	// Setup Response Channel
-	respChan := make(chan dto.GostDto, 1) // Buffered to avoid block
+	// Create Channel for Response
+	ch := make(chan dto.GostDto)
 	Manager.mu.Lock()
-	Manager.PendingRequests[requestId] = respChan
+	Manager.PendingRequests[requestId] = ch
 	Manager.mu.Unlock()
 
-	// Send
-	if err := client.SendEncrypted(string(jsonPayload)); err != nil {
-		Manager.mu.Lock()
-		delete(Manager.PendingRequests, requestId)
-		Manager.mu.Unlock()
-		return &dto.GostDto{Msg: "发送失败: " + err.Error()}
-	}
+	// Serialize
+	jsonMsg, _ := json.Marshal(msg)
 
-	// Wait Response
+	// Send Encrypted
+	client.SendEncrypted(string(jsonMsg))
+
+	// Wait for Response (Timeout 10s)
 	select {
-	case res := <-respChan:
+	case res := <-ch:
 		return &res
 	case <-time.After(10 * time.Second):
+		// Clean up
 		Manager.mu.Lock()
 		delete(Manager.PendingRequests, requestId)
 		Manager.mu.Unlock()
-		return &dto.GostDto{Msg: "等待响应超时"}
+		return &dto.GostDto{Msg: "Timeout"}
 	}
 }
