@@ -183,7 +183,7 @@ func checkGostConfig(nodeId int64, config *dto.GostConfigDto) {
 func processFlowData(flowData *dto.FlowDto) {
 	// 解析服务名
 	parts := strings.Split(flowData.N, "_")
-	if len(parts) != 3 {
+	if len(parts) < 3 {
 		log.Printf("无效的服务名格式: %s", flowData.N)
 		return
 	}
