@@ -122,6 +122,21 @@ func (s *UserService) UpdateUser(dto dto.UserUpdateDto) *result.Result {
 	if dto.Pwd != "" {
 		user.Pwd = utils.Md5(dto.Pwd)
 	}
+	if dto.Status != nil {
+		user.Status = *dto.Status
+	}
+	// Update other fields if provided (assuming 0/empty means no change or allowed to be set to 0?
+	// The problem is 0 might be a valid value for FlowResetTime or Flow (unlikely for Flow).
+	// However, usually updates carry the full object state or we check for non-zero.
+	// Given the context of the user request (sending all fields), we should update them.
+	// For safer partial updates, pointers would be better, but let's stick to the convention of the existing codebase
+	// or what the frontend sends. The curl sends all fields.
+
+	user.Flow = dto.Flow
+	user.Num = dto.Num
+	user.ExpTime = dto.ExpTime
+	user.FlowResetTime = dto.FlowResetTime
+
 	user.UpdatedTime = time.Now().UnixMilli()
 
 	if err := global.DB.Save(&user).Error; err != nil {

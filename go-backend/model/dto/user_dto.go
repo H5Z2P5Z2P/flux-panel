@@ -8,9 +8,14 @@ type UserDto struct {
 }
 
 type UserUpdateDto struct {
-	ID   int64  `json:"id" binding:"required"`
-	User string `json:"user"`
-	Pwd  string `json:"pwd"`
+	ID            int64  `json:"id" binding:"required"`
+	User          string `json:"user" binding:"required"`
+	Pwd           string `json:"pwd"`
+	Status        *int   `json:"status"`
+	Flow          int64  `json:"flow"`
+	Num           int    `json:"num"`
+	ExpTime       int64  `json:"expTime"`
+	FlowResetTime int64  `json:"flowResetTime"`
 }
 
 type ChangePasswordDto struct {
