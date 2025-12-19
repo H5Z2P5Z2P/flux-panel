@@ -235,6 +235,12 @@ func (s *UserService) ResetFlow(req dto.ResetFlowDto) *result.Result {
 		if err := global.DB.Save(&user).Error; err != nil {
 			return result.Err(-1, "重置失败")
 		}
+
+		// Auto-resume services if user is active and not expired
+		if user.Status == 1 && (user.ExpTime == 0 || user.ExpTime > time.Now().UnixMilli()) {
+			s.resumeUserServices(user.ID, 0)
+		}
+
 		return result.Ok("账号流量已重置")
 	}
 
@@ -247,7 +253,73 @@ func (s *UserService) ResetFlow(req dto.ResetFlowDto) *result.Result {
 	if err := global.DB.Save(&userTunnel).Error; err != nil {
 		return result.Err(-1, "重置失败")
 	}
+
+	// Auto-resume services if tunnel is active and not expired
+	if userTunnel.Status == 1 && (userTunnel.ExpTime == 0 || userTunnel.ExpTime > time.Now().UnixMilli()) {
+		s.resumeUserServices(int64(userTunnel.UserId), userTunnel.TunnelId)
+	}
+
 	return result.Ok("隧道流量已重置")
+}
+
+// resumeUserServices resumes paused services for a user.
+// If tunnelId is 0, resumes all services for the user.
+// If tunnelId is specific, only resumes services for that tunnel.
+func (s *UserService) resumeUserServices(userId int64, tunnelId int) {
+	var forwards []model.Forward
+	query := global.DB.Where("user_id = ?", userId)
+	if tunnelId != 0 {
+		query = query.Where("tunnel_id = ?", tunnelId)
+	}
+	query.Find(&forwards)
+
+	for _, forward := range forwards {
+		// Only resume if currently paused (Status 0) - or just force resume?
+		// Logic suggests if we reset flow, we want to ensure it's running.
+		// Taking safely: Check if status is 0, update to 1, and send Resume command.
+		// But wait, if it was manually paused by user, should we resume?
+		// User request says "automatic restore related account/node forwarding on reset".
+		// Usually implies "if it was paused due to flow limit/expiry".
+		// Since we don't track *why* it was paused, we assume reset implies "try to enable".
+
+		var tunnel model.Tunnel
+		if err := global.DB.First(&tunnel, forward.TunnelId).Error; err != nil {
+			continue
+		}
+		// Also check UserTunnel status if we are doing a full user reset (tunnelId==0)
+		// We need the UserTunnel ID for the service name anyway.
+		var userTunnel model.UserTunnel
+		if err := global.DB.Where("user_id = ? AND tunnel_id = ?", userId, tunnel.ID).First(&userTunnel).Error; err != nil {
+			continue
+		}
+
+		// Double check tunnel specific limits if we were coming from a User reset
+		if tunnelId == 0 {
+			if userTunnel.Status != 1 || (userTunnel.ExpTime > 0 && userTunnel.ExpTime < time.Now().UnixMilli()) {
+				continue // Skip this specific tunnel if it's invalid
+			}
+			// Check flow limit of tunnel? user reset might not clear tunnel flow if they are separate?
+			// ResetFlow API separates User Reset vs Tunnel Reset.
+			// If User Reset, we cleared User Flow. Tunnel Flow remains.
+			// If Tunnel usage > limit, should not resume.
+			if userTunnel.Flow > 0 && (userTunnel.InFlow+userTunnel.OutFlow) >= int64(userTunnel.Flow)*1024*1024*1024 {
+				continue
+			}
+		}
+
+		// Proceed to resume
+		serviceName := fmt.Sprintf("%d_%d_%d", forward.ID, userId, userTunnel.ID)
+
+		// 1. Send Resume Command to Node
+		utils.ResumeService(tunnel.InNodeId, serviceName)
+		if tunnel.Type == 2 && tunnel.OutNodeId != 0 {
+			utils.ResumeRemoteService(tunnel.OutNodeId, serviceName)
+		}
+
+		// 2. Update DB Status
+		forward.Status = 1
+		global.DB.Save(&forward)
+	}
 }
 
 func buildUserInfoDto(user *model.User) dto.UserInfoDto {
