@@ -2,12 +2,18 @@ package controller
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
+	"go-backend/global"
+	"go-backend/model"
 	"go-backend/model/dto"
+	"go-backend/result"
 	"go-backend/service"
 	"go-backend/utils"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type UserController struct{}
@@ -75,4 +81,41 @@ func (u *UserController) Reset(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, service.User.ResetFlow(dto))
+}
+
+func (u *UserController) GenerateGuestLink(c *gin.Context) {
+	claims := c.MustGet("claims").(*utils.UserClaims)
+	targetUserId := claims.GetUserId()
+
+	// If userId param is provided and user is admin, use that userId
+	userIdStr := c.Query("userId")
+	if userIdStr != "" && claims.RoleId == 0 {
+		var err error
+		targetUserId, err = strconv.ParseInt(userIdStr, 10, 64)
+		if err != nil {
+			service.ResponseError(c, -1, "Invalid parameters")
+			return
+		}
+	}
+
+	// Check if link exists
+	var link model.GuestLink
+	if err := global.DB.Where("user_id = ?", targetUserId).First(&link).Error; err == nil {
+		c.JSON(http.StatusOK, result.Ok(dto.GuestLinkDto{Token: link.Token}))
+		return
+	}
+
+	// Create new link
+	newLink := model.GuestLink{
+		UserID:      targetUserId,
+		Token:       uuid.New().String(),
+		CreatedTime: time.Now().UnixMilli(),
+	}
+
+	if err := global.DB.Create(&newLink).Error; err != nil {
+		c.JSON(http.StatusOK, result.Err(-1, "Failed to create guest link"))
+		return
+	}
+
+	c.JSON(http.StatusOK, result.Ok(dto.GuestLinkDto{Token: newLink.Token}))
 }

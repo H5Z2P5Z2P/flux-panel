@@ -35,6 +35,10 @@ func InitRouter() *gin.Engine {
 		// Public Routes
 		api.POST("/user/login", userController.Login)
 
+		guestController := new(controller.GuestController)
+		api.GET("/guest/dashboard", guestController.GetDashboard)
+		api.GET("/guest/debug_crash", guestController.DebugCrash)
+
 		// Protected Routes
 		auth := api.Group("/")
 		auth.Use(middleware.Auth())
@@ -49,7 +53,14 @@ func InitRouter() *gin.Engine {
 				user.POST("/delete", middleware.RequireRole(0), userController.Delete)
 				user.POST("/package", userController.Package)
 				user.POST("/reset", middleware.RequireRole(0), userController.Reset)
+				user.GET("/guest_link", userController.GenerateGuestLink)
 			}
+
+			// Guest
+			// user route group is for /user, we need a separate for guest?
+			// The hierarchy is auth -> user.
+
+			// Let's add Public Guest Route outside of auth group
 
 			// Node
 			node := auth.Group("/node")

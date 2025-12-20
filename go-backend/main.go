@@ -34,6 +34,7 @@ func main() {
 			&model.UserTunnel{},
 			&model.StatisticsFlow{},
 			&model.ViteConfig{},
+			&model.GuestLink{},
 		)
 		if err != nil {
 			fmt.Printf("❌ AutoMigrate failed: %v\n", err)

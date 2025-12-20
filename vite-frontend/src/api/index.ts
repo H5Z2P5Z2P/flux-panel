@@ -88,4 +88,8 @@ export const updateConfig = (name: string, value: string) => Network.post("/conf
 // 验证码相关接口
 export const checkCaptcha = () => Network.post("/captcha/check");
 export const generateCaptcha = () => Network.post(`/captcha/generate`);
-export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data); 
+export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data);
+
+// 访客相关接口
+export const getGuestLink = (userId?: number) => Network.get("/user/guest_link", userId ? { userId } : {});
+export const getGuestDashboard = (token: string) => Network.get(`/guest/dashboard`, { token }); 
