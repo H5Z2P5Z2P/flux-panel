@@ -17,6 +17,24 @@ interface GuestUserInfo {
     expTime?: number;
 }
 
+interface UserTunnel {
+    id: number;
+    userId: number;
+    tunnelId: number;
+    tunnelName: string;
+    tunnelFlow: number;
+    flow: number;
+    inFlow: number;
+    outFlow: number;
+    num: number;
+    flowResetTime?: number;
+    expTime?: number;
+    speedId?: number;
+    speedLimitName?: string;
+    speed?: number;
+    status: number;
+}
+
 interface Forward {
     id: number;
     name: string;
@@ -51,6 +69,7 @@ interface AddressItem {
 export default function GuestDashboardPage() {
     const [loading, setLoading] = useState(true);
     const [userInfo, setUserInfo] = useState<GuestUserInfo>({} as GuestUserInfo);
+    const [userTunnels, setUserTunnels] = useState<UserTunnel[]>([]);
     const [forwardList, setForwardList] = useState<Forward[]>([]);
     const [statisticsFlows, setStatisticsFlows] = useState<StatisticsFlow[]>([]);
 
@@ -77,6 +96,7 @@ export default function GuestDashboardPage() {
             if (res.code === 0) {
                 const data = res.data;
                 setUserInfo(data.userInfo || {});
+                setUserTunnels(data.tunnelPermissions || []);
                 setForwardList(data.forwards || []);
                 setStatisticsFlows(data.statisticsFlows || []);
             } else {
@@ -171,6 +191,28 @@ export default function GuestDashboardPage() {
         return `${daysUntilReset}天后重置`;
     };
 
+    const calculateTunnelUsedFlow = (tunnel: UserTunnel): number => {
+        return (tunnel.inFlow || 0) + (tunnel.outFlow || 0);
+    };
+
+    const calculateTunnelFlowPercentage = (tunnel: UserTunnel): number => {
+        const totalUsed = calculateTunnelUsedFlow(tunnel);
+        const totalLimit = (tunnel.flow || 0) * 1024 * 1024 * 1024;
+        if (tunnel.flow === 99999) return 0;
+        return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
+    };
+
+    const calculateTunnelForwardPercentage = (tunnel: UserTunnel): number => {
+        const totalUsed = getTunnelUsedForwards(tunnel.tunnelId);
+        const totalLimit = tunnel.num || 0;
+        if (tunnel.num === 99999) return 0;
+        return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
+    };
+
+    const getTunnelUsedForwards = (tunnelId: number): number => {
+        return forwardList.filter(f => f.tunnelId === tunnelId).length;
+    };
+
     // Add format date for expiration time
     const formatDate = (timestamp?: number): string => {
         if (!timestamp) return '永久';
@@ -263,6 +305,22 @@ export default function GuestDashboardPage() {
         const addresses = remoteAddr.split(',').map(addr => addr.trim()).filter(addr => addr);
         if (addresses.length === 0) return '';
         return addresses.length === 1 ? addresses[0] : `${addresses[0]} (+${addresses.length - 1})`;
+    };
+
+
+    const getExpStatus = (expTime?: number) => {
+        if (!expTime) return { color: 'text-green-600 dark:text-green-400', bg: 'bg-green-100 dark:bg-green-500/20', text: '永久' };
+
+        const now = Date.now();
+        if (expTime < now) {
+            return { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-100 dark:bg-red-500/20', text: '已过期' };
+        }
+
+        const diffDays = Math.ceil((expTime - now) / (1000 * 60 * 60 * 24));
+        if (diffDays <= 7) {
+            return { color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-100 dark:bg-orange-500/20', text: `${diffDays}天后过期` };
+        }
+        return { color: 'text-green-600 dark:text-green-400', bg: 'bg-green-100 dark:bg-green-500/20', text: `${diffDays}天后过期` };
     };
 
     const hasMultipleIps = (ipString: string): boolean => {
@@ -549,6 +607,77 @@ export default function GuestDashboardPage() {
                 </CardBody>
             </Card>
 
+            {/* 隧道权限 */}
+            {userTunnels.length > 0 && (
+                <Card className="mb-6 lg:mb-8 border border-gray-200 dark:border-default-200 shadow-md">
+                    <CardHeader className="pb-3">
+                        <div className="flex items-center gap-2">
+                            <svg className="w-5 h-5 text-primary" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z" clipRule="evenodd" />
+                            </svg>
+                            <h2 className="text-lg lg:text-xl font-semibold text-foreground">隧道权限</h2>
+                            <span className="px-2 py-1 bg-default-100 dark:bg-default-50 text-default-600 rounded-full text-xs">
+                                {userTunnels.length}
+                            </span>
+                        </div>
+                    </CardHeader>
+                    <CardBody className="pt-0">
+                        <div className="space-y-3">
+                            {userTunnels.map((tunnel) => {
+                                const tunnelExpStatus = getExpStatus(tunnel.expTime);
+                                return (
+                                    <div key={tunnel.id} className="border border-gray-200 dark:border-default-100 rounded-lg p-3 lg:p-4 hover:shadow-md transition-shadow">
+                                        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-3">
+                                            <div>
+                                                <h3 className="font-semibold text-foreground">{tunnel.tunnelName} ID: {tunnel.tunnelId}</h3>
+                                                <div className="flex flex-wrap items-center gap-2 mt-1">
+                                                    <span className={`px-2 py-1 rounded-md text-xs font-medium ${tunnel.tunnelFlow === 1 ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300' : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-300'}`}>
+                                                        {tunnel.tunnelFlow === 1 ? '单向计费' : '双向计费'}
+                                                    </span>
+                                                    <span className={`px-2 py-1 rounded-md text-xs font-medium border ${tunnelExpStatus.bg} ${tunnelExpStatus.color.replace('text-', 'border-').replace('600', '200')} ${tunnelExpStatus.color}`}>
+                                                        {tunnelExpStatus.text}
+                                                    </span>
+                                                    {(tunnel.flowResetTime !== undefined && tunnel.flowResetTime !== null) && (
+                                                        <span className="text-xs text-default-500">
+                                                            {formatResetTime(tunnel.flowResetTime)}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
+                                            <div>
+                                                <p className="text-sm text-default-600 mb-1">流量配额</p>
+                                                <p className="font-semibold text-foreground">{formatFlow(tunnel.flow, 'gb')}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-sm text-default-600 mb-1">已用流量</p>
+                                                <p className="font-semibold text-foreground">{formatFlow(calculateTunnelUsedFlow(tunnel))}</p>
+                                                <div className="mt-1">
+                                                    {renderProgressBar(calculateTunnelFlowPercentage(tunnel), 'sm', tunnel.flow === 99999)}
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <p className="text-sm text-default-600 mb-1">转发配额</p>
+                                                <p className="font-semibold text-foreground">{formatNumber(tunnel.num)}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-sm text-default-600 mb-1">已用转发</p>
+                                                <p className="font-semibold text-foreground">{getTunnelUsedForwards(tunnel.tunnelId)}</p>
+                                                <div className="mt-1">
+                                                    {renderProgressBar(calculateTunnelForwardPercentage(tunnel), 'sm', tunnel.num === 99999)}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </CardBody>
+                </Card>
+            )}
+
             {/* 转发配置 */}
             <Card className="border border-gray-200 dark:border-default-200 shadow-md">
                 <CardHeader className="pb-3">
@@ -631,13 +760,14 @@ export default function GuestDashboardPage() {
                         </div>
                     )}
                 </CardBody>
-            </Card>
+            </Card >
 
             {/* 地址列表弹窗 */}
-            <Modal isOpen={addressModalOpen} onClose={() => setAddressModalOpen(false)} size="2xl"
+            < Modal isOpen={addressModalOpen} onClose={() => setAddressModalOpen(false)
+            } size="2xl"
                 scrollBehavior="outside"
                 backdrop="blur"
-                placement="center">
+                placement="center" >
                 <ModalContent>
                     <ModalHeader className="text-base">{addressModalTitle}</ModalHeader>
                     <ModalBody className="pb-6">
@@ -664,7 +794,7 @@ export default function GuestDashboardPage() {
                         </div>
                     </ModalBody>
                 </ModalContent>
-            </Modal>
-        </div>
+            </Modal >
+        </div >
     );
 }

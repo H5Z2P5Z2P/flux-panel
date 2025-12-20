@@ -1,9 +1,10 @@
 package dto
 
 type GuestDashboardDto struct {
-	UserInfo        GuestUserInfoDto       `json:"userInfo"`
-	Forwards        []UserForwardDetailDto `json:"forwards"`
-	StatisticsFlows []StatisticsFlowDto    `json:"statisticsFlows"`
+	UserInfo          GuestUserInfoDto       `json:"userInfo"`
+	TunnelPermissions []UserTunnelDetailDto  `json:"tunnelPermissions"`
+	Forwards          []UserForwardDetailDto `json:"forwards"`
+	StatisticsFlows   []StatisticsFlowDto    `json:"statisticsFlows"`
 }
 
 type GuestUserInfoDto struct {

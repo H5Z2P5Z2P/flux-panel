@@ -61,27 +61,10 @@ func (g *GuestController) GetDashboard(c *gin.Context) {
 	}
 
 	// Fetch StatisticsFlows (Last 24h)
-	var flows []model.StatisticsFlow
-	global.DB.Where("user_id = ?", user.ID).Order("id desc").Limit(24).Find(&flows)
+	flowList := service.User.GetLast24HoursFlowStatistics(user.ID)
 
-	// Reverse to chronological order
-	for i, j := 0, len(flows)-1; i < j; i, j = i+1, j-1 {
-		flows[i], flows[j] = flows[j], flows[i]
-	}
-
-	statsDtos := make([]dto.StatisticsFlowDto, 0)
-	for _, f := range flows {
-		id := f.ID
-		createdTime := f.CreatedTime
-		statsDtos = append(statsDtos, dto.StatisticsFlowDto{
-			ID:          &id,
-			UserId:      f.UserId,
-			Flow:        f.Flow,
-			TotalFlow:   f.TotalFlow,
-			Time:        f.Time,
-			CreatedTime: &createdTime,
-		})
-	}
+	// Fetch Tunnel Permissions
+	permissions := service.User.GetTunnelPermissions(user.ID)
 
 	resp := dto.GuestDashboardDto{
 		UserInfo: dto.GuestUserInfoDto{
@@ -93,8 +76,9 @@ func (g *GuestController) GetDashboard(c *gin.Context) {
 			FlowResetTime: user.FlowResetTime,
 			ExpTime:       user.ExpTime,
 		},
-		Forwards:        forwardDtos,
-		StatisticsFlows: statsDtos,
+		TunnelPermissions: permissions,
+		Forwards:          forwardDtos,
+		StatisticsFlows:   flowList,
 	}
 
 	c.JSON(http.StatusOK, result.Ok(resp))

@@ -211,9 +211,9 @@ func (s *UserService) GetUserPackageInfo(claims *utils.UserClaims) *result.Resul
 	}
 
 	// Fetch additional data
-	permissions := s.getTunnelPermissions(user.ID)
-	forwards := s.getForwardDetails(user.ID)
-	flowList := s.getLast24HoursFlowStatistics(user.ID)
+	permissions := s.GetTunnelPermissions(user.ID)
+	forwards := s.GetForwardDetails(user.ID)
+	flowList := s.GetLast24HoursFlowStatistics(user.ID)
 
 	return result.Ok(dto.UserPackageDto{
 		UserInfo:          buildUserInfoDto(&user),
@@ -339,7 +339,7 @@ func buildUserInfoDto(user *model.User) dto.UserInfoDto {
 	}
 }
 
-func (s *UserService) getTunnelPermissions(userId int64) []dto.UserTunnelDetailDto {
+func (s *UserService) GetTunnelPermissions(userId int64) []dto.UserTunnelDetailDto {
 	var relations []model.UserTunnel
 	global.DB.Where("user_id = ?", userId).Find(&relations)
 
@@ -370,7 +370,7 @@ func (s *UserService) getTunnelPermissions(userId int64) []dto.UserTunnelDetailD
 	return resultList
 }
 
-func (s *UserService) getForwardDetails(userId int64) []dto.UserForwardDetailDto {
+func (s *UserService) GetForwardDetails(userId int64) []dto.UserForwardDetailDto {
 	var forwards []model.Forward
 	global.DB.Where("user_id = ?", userId).Find(&forwards)
 
@@ -397,7 +397,7 @@ func (s *UserService) getForwardDetails(userId int64) []dto.UserForwardDetailDto
 	return resultList
 }
 
-func (s *UserService) getLast24HoursFlowStatistics(userId int64) []dto.StatisticsFlowDto {
+func (s *UserService) GetLast24HoursFlowStatistics(userId int64) []dto.StatisticsFlowDto {
 	var flows []model.StatisticsFlow
 	global.DB.Where("user_id = ?", userId).Order("id desc").Limit(24).Find(&flows)
 
