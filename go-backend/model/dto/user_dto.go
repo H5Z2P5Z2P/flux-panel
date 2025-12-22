@@ -2,7 +2,7 @@ package dto
 
 type UserDto struct {
 	User          string `json:"user" binding:"required"`
-	Pwd           string `json:"pwd" binding:"required"`
+	Pwd           string `json:"pwd"` // Optional now
 	Status        *int   `json:"status"`
 	Flow          int64  `json:"flow"`
 	Num           int    `json:"num"`
