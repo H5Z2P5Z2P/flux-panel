@@ -341,7 +341,7 @@ export default function UserPage() {
   };
 
   const handleSubmitUser = async () => {
-    if (!userForm.user || (!userForm.pwd && !isEdit) || !userForm.expTime) {
+    if (!userForm.user || !userForm.expTime) {
       toast.error('请填写完整信息');
       return;
     }
@@ -352,10 +352,6 @@ export default function UserPage() {
         ...userForm,
         expTime: userForm.expTime.getTime()
       };
-
-      if (isEdit && !submitData.pwd) {
-        delete submitData.pwd;
-      }
 
       const response = isEdit ? await updateUser(submitData) : await createUser(submitData);
 
@@ -920,12 +916,6 @@ export default function UserPage() {
           </ModalHeader>
           <ModalBody>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Input
-                label="用户名"
-                value={userForm.user}
-                onChange={(e) => setUserForm(prev => ({ ...prev, user: e.target.value }))}
-                isRequired
-              />
               <Input
                 label="用户名"
                 value={userForm.user}
