@@ -52,7 +52,7 @@ func (g *GuestController) GetDashboard(c *gin.Context) {
 			TunnelName: tunnel.Name,
 			InIP:       tunnel.InIp,
 			InPort:     f.InPort,
-			RemoteAddr: f.RemoteAddr,
+			RemoteAddr: "",
 			InFlow:     f.InFlow,
 			OutFlow:    f.OutFlow,
 			Status:     f.Status,

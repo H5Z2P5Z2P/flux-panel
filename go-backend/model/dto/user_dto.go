@@ -1,10 +1,14 @@
 package dto
 
 type UserDto struct {
-	User    string `json:"user" binding:"required"`
-	Pwd     string `json:"pwd" binding:"required"`
-	Status  *int   `json:"status"`
-	MaxFlow int64  `json:"maxFlow"` // Not used directly in model?
+	User          string `json:"user" binding:"required"`
+	Pwd           string `json:"pwd" binding:"required"`
+	Status        *int   `json:"status"`
+	Flow          int64  `json:"flow"`
+	Num           int    `json:"num"`
+	ExpTime       int64  `json:"expTime"`
+	FlowResetTime int64  `json:"flowResetTime"`
+	MaxFlow       int64  `json:"maxFlow"` // Not used directly in model?
 }
 
 type UserUpdateDto struct {

@@ -300,12 +300,7 @@ export default function GuestDashboardPage() {
         return `${formattedFirstIp}:${port} (+${ips.length - 1})`;
     };
 
-    const formatRemoteAddress = (remoteAddr: string): string => {
-        if (!remoteAddr) return '';
-        const addresses = remoteAddr.split(',').map(addr => addr.trim()).filter(addr => addr);
-        if (addresses.length === 0) return '';
-        return addresses.length === 1 ? addresses[0] : `${addresses[0]} (+${addresses.length - 1})`;
-    };
+
 
 
     const getExpStatus = (expTime?: number) => {
@@ -329,11 +324,7 @@ export default function GuestDashboardPage() {
         return ips.length > 1;
     };
 
-    const hasMultipleRemoteAddresses = (remoteAddr: string): boolean => {
-        if (!remoteAddr) return false;
-        const addresses = remoteAddr.split(',').map(addr => addr.trim()).filter(addr => addr);
-        return addresses.length > 1;
-    };
+
 
     const showAddressModal = (ipString: string, port: number, title: string) => {
         if (!ipString || !port) return;
@@ -364,28 +355,7 @@ export default function GuestDashboardPage() {
         setAddressModalOpen(true);
     };
 
-    const showRemoteAddressModal = (remoteAddr: string, title: string) => {
-        if (!remoteAddr) return;
-        const addresses = remoteAddr.split(',').map(addr => addr.trim()).filter(addr => addr);
 
-        if (addresses.length <= 1) {
-            copyToClipboard(remoteAddr);
-            return;
-        }
-
-        const formattedList = addresses.map((address, index) => {
-            return {
-                id: index,
-                ip: address,
-                address: address,
-                copying: false
-            };
-        });
-
-        setAddressList(formattedList);
-        setAddressModalTitle(`${title} (${addresses.length}个)`);
-        setAddressModalOpen(true);
-    };
 
     const copyToClipboard = async (text: string) => {
         try {
@@ -724,14 +694,7 @@ export default function GuestDashboardPage() {
                                                             >
                                                                 {formatInAddress(forward.inIp, forward.inPort)}
                                                             </code>
-                                                            <div className="text-center text-default-400 text-xs">↓</div>
-                                                            <code
-                                                                className={`block px-2 py-1 bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 rounded font-mono text-xs truncate ${hasMultipleRemoteAddresses(forward.remoteAddr) ? 'cursor-pointer hover:bg-blue-200 dark:hover:bg-blue-500/30' : ''}`}
-                                                                onClick={() => hasMultipleRemoteAddresses(forward.remoteAddr) && showRemoteAddressModal(forward.remoteAddr, '出口地址')}
-                                                                title={formatRemoteAddress(forward.remoteAddr)}
-                                                            >
-                                                                {formatRemoteAddress(forward.remoteAddr)}
-                                                            </code>
+
                                                         </div>
                                                     </div>
 

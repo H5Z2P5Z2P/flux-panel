@@ -76,10 +76,10 @@ func (s *UserService) CreateUser(dto dto.UserDto) *result.Result {
 		RoleId:        1, // Normal User
 		CreatedTime:   time.Now().UnixMilli(),
 		UpdatedTime:   time.Now().UnixMilli(),
-		ExpTime:       time.Now().Add(10 * 24 * time.Hour).UnixMilli(),
-		Flow:          100,
-		Num:           10,
-		FlowResetTime: 0,
+		ExpTime:       dto.ExpTime,
+		Flow:          dto.Flow,
+		Num:           dto.Num,
+		FlowResetTime: dto.FlowResetTime,
 	}
 
 	if dto.Status != nil {
