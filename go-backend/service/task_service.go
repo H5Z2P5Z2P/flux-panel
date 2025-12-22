@@ -55,21 +55,6 @@ func (s *TaskService) ResetFlow() {
 			global.DB.Save(&user)
 		}
 	}
-
-	// 2. Reset UserTunnel Flow
-	var userTunnels []model.UserTunnel
-	global.DB.Where("flow_reset_time != 0").Find(&userTunnels)
-	for _, ut := range userTunnels {
-		shouldReset := int(ut.FlowResetTime) == currentDay
-		if currentDay == lastDayOfMonth && int(ut.FlowResetTime) > lastDayOfMonth {
-			shouldReset = true
-		}
-		if shouldReset {
-			ut.InFlow = 0
-			ut.OutFlow = 0
-			global.DB.Save(&ut)
-		}
-	}
 }
 
 func (s *TaskService) CheckExpiry() {
@@ -89,21 +74,6 @@ func (s *TaskService) CheckExpiry() {
 		}
 		user.Status = 0
 		global.DB.Save(&user)
-	}
-
-	// 2. Expired UserTunnels
-	var userTunnels []model.UserTunnel
-	global.DB.Where("status = 1 AND exp_time < ?", now).Find(&userTunnels)
-	for _, ut := range userTunnels {
-		var forwards []model.Forward
-		global.DB.Where("tunnel_id = ? AND user_id = ? AND status = 1", ut.TunnelId, ut.UserId).Find(&forwards)
-		for _, forward := range forwards {
-			s.pauseForward(&forward)
-			forward.Status = 0
-			global.DB.Save(&forward)
-		}
-		ut.Status = 0
-		global.DB.Save(&ut)
 	}
 }
 

@@ -25,14 +25,10 @@ func (s *UserTunnelService) AssignUserTunnel(userTunnelDto dto.UserTunnelDto) *r
 
 	// 创建权限记录
 	userTunnel := model.UserTunnel{
-		UserId:        int(userTunnelDto.UserId),
-		TunnelId:      int(userTunnelDto.TunnelId),
-		Flow:          userTunnelDto.Flow,
-		Num:           userTunnelDto.Num,
-		FlowResetTime: int64(userTunnelDto.FlowResetTime),
-		ExpTime:       userTunnelDto.ExpTime,
-		SpeedId:       userTunnelDto.SpeedId,
-		Status:        1, // 默认启用
+		UserId:   int(userTunnelDto.UserId),
+		TunnelId: int(userTunnelDto.TunnelId),
+		SpeedId:  userTunnelDto.SpeedId,
+		Status:   1, // 默认启用
 	}
 
 	if err := global.DB.Create(&userTunnel).Error; err != nil {
@@ -105,10 +101,6 @@ func (s *UserTunnelService) UpdateUserTunnel(updateDto dto.UserTunnelUpdateDto) 
 	speedChanged := (oldSpeedId != updateDto.SpeedId)
 
 	// 更新属性
-	userTunnel.Flow = updateDto.Flow
-	userTunnel.Num = updateDto.Num
-	userTunnel.FlowResetTime = int64(updateDto.FlowResetTime)
-	userTunnel.ExpTime = updateDto.ExpTime
 	userTunnel.SpeedId = updateDto.SpeedId
 	if updateDto.Status != nil {
 		userTunnel.Status = *updateDto.Status

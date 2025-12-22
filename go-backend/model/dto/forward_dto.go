@@ -7,6 +7,7 @@ type ForwardDto struct {
 	InPort        *int   `json:"inPort"`        // Optional
 	InterfaceName string `json:"interfaceName"` // Optional
 	Strategy      string `json:"strategy"`      // Optional
+	UserId        *int64 `json:"userId"`        // Optional: Admin only
 }
 
 type ForwardUpdateDto struct {

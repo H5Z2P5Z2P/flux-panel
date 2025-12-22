@@ -38,10 +38,6 @@ export interface UserTunnel {
   tunnelId: number;
   tunnelName: string;
   status: number; // 1-正常, 0-禁用
-  flow: number; // 流量限制(GB)
-  num: number; // 转发数量
-  expTime: number; // 过期时间戳
-  flowResetTime: number; // 流量重置日期
   speedId?: number | null; // 限速规则ID
   speedLimitName?: string; // 限速规则名称
   inFlow?: number; // 下载流量(字节)
@@ -51,10 +47,6 @@ export interface UserTunnel {
 
 export interface UserTunnelForm {
   tunnelId: number | null;
-  flow: number;
-  num: number;
-  expTime: Date | null;
-  flowResetTime: number;
   speedId: number | null;
 }
 

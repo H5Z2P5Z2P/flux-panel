@@ -17,6 +17,72 @@ type UserService struct{}
 
 var User = new(UserService)
 
+func (s *UserService) MigrateUserData() {
+	fmt.Println("[Migration] 开始迁移用户数据...")
+	var users []model.User
+	global.DB.Find(&users)
+
+	for _, user := range users {
+		var userTunnels []model.UserTunnel
+		global.DB.Where("user_id = ?", user.ID).Find(&userTunnels)
+
+		if len(userTunnels) > 0 {
+			// Basic strategy: Take the max values from UserTunnels to overwrite/set User defaults
+			// Since current model limits were on UserTunnel, we should preserve them on User.
+			var maxExpTime int64 = 0
+			var maxNum int = 0
+			var maxFlow int64 = 0
+			var flowResetTime int64 = 0
+
+			for _, ut := range userTunnels {
+				if ut.ExpTime > maxExpTime {
+					maxExpTime = ut.ExpTime
+				}
+				if ut.Num > maxNum {
+					maxNum = ut.Num
+				}
+				if ut.Flow > maxFlow {
+					maxFlow = ut.Flow
+				}
+				if ut.FlowResetTime > 0 {
+					flowResetTime = ut.FlowResetTime
+				}
+			}
+
+			// Apply to User if User values are default/zero, OR just overwrite as per plan?
+			// Plan said "merge". Overwriting is safer to ensure valid configuration is preserved.
+			// Assuming User table might have junk/default values.
+
+			updated := false
+			if maxExpTime > user.ExpTime {
+				user.ExpTime = maxExpTime
+				updated = true
+			}
+			if maxNum > user.Num {
+				user.Num = maxNum
+				updated = true
+			}
+			if maxFlow > user.Flow {
+				user.Flow = maxFlow
+				updated = true
+			}
+			if flowResetTime > 0 {
+				user.FlowResetTime = flowResetTime
+				updated = true
+			}
+
+			if updated {
+				// Also reset InFlow/OutFlow on User if we want to carry over usage?
+				// The plan didn't explicitly demand carrying over usage, but limits.
+				// Let's stick to limits for now.
+				global.DB.Save(&user)
+				fmt.Printf("[Migration] Updated User ID %d with migrated limits\n", user.ID)
+			}
+		}
+	}
+	fmt.Println("[Migration] 用户数据迁移完成")
+}
+
 func (s *UserService) Login(loginDto dto.LoginDto) *result.Result {
 	// 1. Verify Captcha
 	captchaEnabled := ViteConfig.GetValue("captcha_enabled")
@@ -71,9 +137,9 @@ func (s *UserService) CreateUser(dto dto.UserDto) *result.Result {
 	// Num: 10
 	user := model.User{
 		User:          dto.User,
-		Pwd:           utils.Md5(dto.Pwd),
-		Status:        1, // Active
-		RoleId:        1, // Normal User
+		Pwd:           "", // Removed password concept
+		Status:        1,  // Active
+		RoleId:        1,  // Normal User
 		CreatedTime:   time.Now().UnixMilli(),
 		UpdatedTime:   time.Now().UnixMilli(),
 		ExpTime:       dto.ExpTime,
@@ -244,22 +310,7 @@ func (s *UserService) ResetFlow(req dto.ResetFlowDto) *result.Result {
 		return result.Ok("账号流量已重置")
 	}
 
-	var userTunnel model.UserTunnel
-	if err := global.DB.First(&userTunnel, req.ID).Error; err != nil {
-		return result.Err(-1, "隧道不存在")
-	}
-	userTunnel.InFlow = 0
-	userTunnel.OutFlow = 0
-	if err := global.DB.Save(&userTunnel).Error; err != nil {
-		return result.Err(-1, "重置失败")
-	}
-
-	// Auto-resume services if tunnel is active and not expired
-	if userTunnel.Status == 1 && (userTunnel.ExpTime == 0 || userTunnel.ExpTime > time.Now().UnixMilli()) {
-		s.resumeUserServices(int64(userTunnel.UserId), userTunnel.TunnelId)
-	}
-
-	return result.Ok("隧道流量已重置")
+	return result.Err(-1, "不支持隧道流量重置，请重置用户流量")
 }
 
 // resumeUserServices resumes paused services for a user.
@@ -295,15 +346,8 @@ func (s *UserService) resumeUserServices(userId int64, tunnelId int) {
 
 		// Double check tunnel specific limits if we were coming from a User reset
 		if tunnelId == 0 {
-			if userTunnel.Status != 1 || (userTunnel.ExpTime > 0 && userTunnel.ExpTime < time.Now().UnixMilli()) {
+			if userTunnel.Status != 1 {
 				continue // Skip this specific tunnel if it's invalid
-			}
-			// Check flow limit of tunnel? user reset might not clear tunnel flow if they are separate?
-			// ResetFlow API separates User Reset vs Tunnel Reset.
-			// If User Reset, we cleared User Flow. Tunnel Flow remains.
-			// If Tunnel usage > limit, should not resume.
-			if userTunnel.Flow > 0 && (userTunnel.InFlow+userTunnel.OutFlow) >= int64(userTunnel.Flow)*1024*1024*1024 {
-				continue
 			}
 		}
 
