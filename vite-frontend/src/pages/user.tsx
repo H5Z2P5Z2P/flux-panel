@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { Input } from "@heroui/input";
+import { Input, Textarea } from "@heroui/input";
 import {
   Table,
   TableHeader,
@@ -549,7 +549,7 @@ export default function UserPage() {
       name: forward.name,
       tunnelId: forward.tunnelId,
       inPort: forward.inPort,
-      remoteAddr: forward.remoteAddr,
+      remoteAddr: forward.remoteAddr ? forward.remoteAddr.split(',').join('\n') : '',
       interfaceName: forward.interfaceName || '',
       strategy: forward.strategy || 'fifo'
     });
@@ -580,7 +580,20 @@ export default function UserPage() {
 
     setForwardSubmitLoading(true);
     try {
-      const data = { ...forwardForm };
+      const processedRemoteAddr = forwardForm.remoteAddr
+        .split('\n')
+        .map(addr => addr.trim())
+        .filter(addr => addr)
+        .join(',');
+
+      const addressCount = processedRemoteAddr.split(',').length;
+
+      const data = {
+        ...forwardForm,
+        remoteAddr: processedRemoteAddr,
+        strategy: addressCount > 1 ? forwardForm.strategy : 'fifo'
+      };
+
       if (forwardViewMode === 'form' && !data.id) {
         // Create - backend needs UserId context? 
         // API CreateForward doesn't take UserId in DTO normally (takes from Claims).
@@ -1513,6 +1526,7 @@ export default function UserPage() {
                     value={forwardForm.name}
                     onChange={(e) => setForwardForm(prev => ({ ...prev, name: e.target.value }))}
                     isRequired
+                    variant="bordered"
                   />
                   <Select
                     label="选择隧道"
@@ -1522,42 +1536,62 @@ export default function UserPage() {
                       setForwardForm(prev => ({ ...prev, tunnelId: Number(value) }))
                     }}
                     isRequired
+                    variant="bordered"
                   >
                     {userTunnels.map((t) => (
-                      <SelectItem key={t.tunnelId.toString()} textValue={t.tunnelName}>
+                      <SelectItem key={t.tunnelId.toString()} textValue={t.tunnelName || ''}>
                         {t.tunnelName}
                       </SelectItem>
                     ))}
                   </Select>
-                  <Input
-                    label="远程地址 (IP:Port)"
-                    value={forwardForm.remoteAddr}
-                    onChange={(e) => setForwardForm(prev => ({ ...prev, remoteAddr: e.target.value }))}
-                    placeholder="8.8.8.8:53"
-                    isRequired
-                  />
+
+                  <div className="col-span-1 md:col-span-2">
+                    <Textarea
+                      label="远程地址"
+                      placeholder="请输入远程地址，多个地址用换行分隔&#10;例如:&#10;192.168.1.100:8080&#10;example.com:3000"
+                      value={forwardForm.remoteAddr}
+                      onChange={(e) => setForwardForm(prev => ({ ...prev, remoteAddr: e.target.value }))}
+                      variant="bordered"
+                      description="格式: IP:端口 或 域名:端口，支持多个地址（每行一个）"
+                      minRows={3}
+                      maxRows={6}
+                      isRequired
+                    />
+                  </div>
+
                   <Input
                     label="内网端口 (选填，留空随机)"
                     type="number"
                     value={forwardForm.inPort?.toString() || ''}
                     onChange={(e) => setForwardForm(prev => ({ ...prev, inPort: e.target.value ? Number(e.target.value) : null }))}
+                    variant="bordered"
                   />
-                  <Select
-                    label="协议策略"
-                    selectedKeys={[forwardForm.strategy]}
-                    onSelectionChange={(keys) => {
-                      const value = Array.from(keys)[0] as string;
-                      setForwardForm(prev => ({ ...prev, strategy: value }))
-                    }}
-                  >
-                    <SelectItem key="fifo" textValue="FIFO">FIFO</SelectItem>
-                    <SelectItem key="rr" textValue="Round Robin">Round Robin</SelectItem>
-                    <SelectItem key="random" textValue="Random">Random</SelectItem>
-                  </Select>
+
+                  {(forwardForm.remoteAddr.split('\n').filter(l => l.trim()).length > 1) && (
+                    <Select
+                      label="负载策略"
+                      placeholder="请选择负载均衡策略"
+                      selectedKeys={[forwardForm.strategy]}
+                      onSelectionChange={(keys) => {
+                        const value = Array.from(keys)[0] as string;
+                        setForwardForm(prev => ({ ...prev, strategy: value }))
+                      }}
+                      variant="bordered"
+                      description="多个目标地址的负载均衡策略"
+                    >
+                      <SelectItem key="fifo" textValue="主备模式">主备模式 - 自上而下</SelectItem>
+                      <SelectItem key="round" textValue="轮询模式">轮询模式 - 依次轮换</SelectItem>
+                      <SelectItem key="rand" textValue="随机模式">随机模式 - 随机选择</SelectItem>
+                      <SelectItem key="hash" textValue="哈希模式">哈希模式 - IP哈希</SelectItem>
+                    </Select>
+                  )}
+
                   <Input
                     label="绑定网卡 (选填)"
                     value={forwardForm.interfaceName || ''}
                     onChange={(e) => setForwardForm(prev => ({ ...prev, interfaceName: e.target.value }))}
+                    variant="bordered"
+                    description="用于多IP服务器指定出口IP"
                   />
                 </div>
               </div>
