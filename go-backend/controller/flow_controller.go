@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"go-backend/global"
 	"go-backend/model"
@@ -20,17 +22,61 @@ import (
 type FlowController struct{}
 
 const (
-	SUCCESS_RESPONSE             = "ok"
-	DEFAULT_USER_TUNNEL_ID       = "0"
-	BYTES_TO_GB            int64 = 1024 * 1024 * 1024
+	SUCCESS_RESPONSE       = "ok"
+	DEFAULT_USER_TUNNEL_ID = "0"
+
+	BYTES_TO_GB           int64 = 1024 * 1024 * 1024
+	BUFFER_FLUSH_INTERVAL       = 10 * time.Second // 缓冲区刷新间隔
 )
+
+func init() {
+	// 初始化流量缓冲区
+	// 注意：在 main.go 中 global.InitDB() 之后调用可能更合适，但为了确保不为空，这里也放一个
+	// 实际上，为了避免 DB 未初始化错误，我们在 StartFlowQueueConsumer 中确保它被启动
+}
 
 var (
 	// 流量更新锁，保证并发安全
 	userFlowLock    sync.RWMutex
 	tunnelFlowLock  sync.RWMutex
 	forwardFlowLock sync.RWMutex
+
+	// 流量队列
+	flowQueue     = make(chan *FlowQueueItem, 2000) // 增加缓冲大小
+	flowQueueOnce sync.Once
 )
+
+type FlowQueueItem struct {
+	FlowData *dto.FlowDto
+	NodeID   int64
+	Time     time.Time
+}
+
+// StartFlowQueueConsumer 启动后台流量消费协程
+func StartFlowQueueConsumer() {
+	flowQueueOnce.Do(func() {
+		// 初始化缓冲区
+		InitFlowBuffer(BUFFER_FLUSH_INTERVAL)
+
+		go consumeFlowQueue()
+		log.Println("🚀 流量异步处理队列已启动")
+	})
+}
+
+// consumeFlowQueue 消费流量队列
+func consumeFlowQueue() {
+	for item := range flowQueue {
+		// 恢复 panic，防止协程崩溃
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("❌ 处理流量数据时发生 Panic: %v", r)
+				}
+			}()
+			processFlowData(item.FlowData, item.NodeID)
+		}()
+	}
+}
 
 // Config 节点获取配置并触发配置检查
 func (c *FlowController) Config(ctx *gin.Context) {
@@ -76,8 +122,9 @@ func (c *FlowController) Config(ctx *gin.Context) {
 func (c *FlowController) Upload(ctx *gin.Context) {
 	secret := ctx.Query("secret")
 
-	// 验证节点
-	if !isValidNode(secret) {
+	// 验证节点并获取 NodeID
+	node, err := getNodeBySecret(secret)
+	if err != nil {
 		ctx.String(http.StatusOK, SUCCESS_RESPONSE)
 		return
 	}
@@ -110,8 +157,21 @@ func (c *FlowController) Upload(ctx *gin.Context) {
 
 	log.Printf("节点上报流量数据: %+v", flowData)
 
-	// 处理流量数据
-	processFlowData(&flowData)
+	// 确保消费者已启动
+	StartFlowQueueConsumer()
+
+	// 异步入队处理
+	select {
+	case flowQueue <- &FlowQueueItem{
+		FlowData: &flowData,
+		NodeID:   node.ID,
+		Time:     time.Now(),
+	}:
+		// 成功入队
+	default:
+		// 队列满，记录警告（不影响响应）
+		log.Printf("⚠️ 流量队列已满 (%d/%d)，丢弃数据: %s", len(flowQueue), cap(flowQueue), flowData.N)
+	}
 
 	ctx.String(http.StatusOK, SUCCESS_RESPONSE)
 }
@@ -146,11 +206,13 @@ func decryptIfNeeded(rawData string, secret string) (string, error) {
 	return rawData, nil
 }
 
-// isValidNode 验证节点密钥
-func isValidNode(secret string) bool {
-	var count int64
-	global.DB.Model(&model.Node{}).Where("secret = ?", secret).Count(&count)
-	return count > 0
+// getNodeBySecret 验证并获取节点
+func getNodeBySecret(secret string) (*model.Node, error) {
+	var node model.Node
+	if err := global.DB.Where("secret = ?", secret).First(&node).Error; err != nil {
+		return nil, err
+	}
+	return &node, nil
 }
 
 // checkGostConfig 检查 Gost 配置
@@ -180,7 +242,7 @@ func checkGostConfig(nodeId int64, config *dto.GostConfigDto) {
 }
 
 // processFlowData 处理流量数据
-func processFlowData(flowData *dto.FlowDto) {
+func processFlowData(flowData *dto.FlowDto, nodeId int64) {
 	// 解析服务名
 	parts := strings.Split(flowData.N, "_")
 	if len(parts) < 3 {
@@ -202,15 +264,34 @@ func processFlowData(flowData *dto.FlowDto) {
 	var tunnel model.Tunnel
 	global.DB.First(&tunnel, forward.TunnelId)
 
+	// --- 1. 基础数据 (Raw) ---
+	rawIn := int64(flowData.D)  // Agent Input = Client Upload = Server In
+	rawOut := int64(flowData.U) // Agent Output = Client Download = Server Out
+
+	// --- 2. 计费逻辑 (Billing) ---
 	// 应用流量倍率和单双向计算
-	inFlow, outFlow := calculateFlow(flowData, &tunnel)
+	billingIn, billingOut := calculateBillingFlow(rawIn, rawOut, &tunnel)
 
-	// 更新流量统计（并发安全）
-	updateForwardFlow(forwardId, inFlow, outFlow)
-	updateUserFlow(userId, inFlow, outFlow)
-	updateUserTunnelFlow(userTunnelId, inFlow, outFlow)
+	// --- 3. 更新各个实体的流量 (使用缓冲区) ---
 
-	// 检查限制并自动暂停
+	// 更新转发 (Forward) - Raw + Billing
+	GlobalFlowBuffer.AddForward(int64(forward.ID), rawIn, rawOut, billingIn, billingOut)
+
+	// 更新用户 (User) - Raw + Billing
+	GlobalFlowBuffer.AddUser(int64(forward.UserId), rawIn, rawOut, billingIn, billingOut)
+
+	// 更新用户隧道 (UserTunnel) - Raw + Billing
+	if userTunnelId != DEFAULT_USER_TUNNEL_ID {
+		GlobalFlowBuffer.AddUserTunnel(userTunnelId, rawIn, rawOut, billingIn, billingOut)
+	}
+
+	// 更新节点 (Node) - Raw Only
+	GlobalFlowBuffer.AddNode(nodeId, rawIn, rawOut)
+
+	// --- 4. 记录历史流量 (TrafficRecord) ---
+	GlobalFlowBuffer.AddHistory(nodeId, int64(forward.ID), int64(forward.UserId), int64(tunnel.ID), rawIn, rawOut, billingIn+billingOut)
+
+	// 检查限制并自动暂停 (注意：由于缓冲区的存在，这里读取到的流量可能有 10s 延迟，这是允许的)
 	serviceName := fmt.Sprintf("%s_%s_%s", forwardId, userId, userTunnelId)
 	if userTunnelId != DEFAULT_USER_TUNNEL_ID {
 		checkUserLimits(userId, serviceName)
@@ -218,37 +299,41 @@ func processFlowData(flowData *dto.FlowDto) {
 	}
 }
 
-// calculateFlow 计算流量（考虑倍率和单双向）
-func calculateFlow(flowData *dto.FlowDto, tunnel *model.Tunnel) (int64, int64) {
+// calculateBillingFlow 计算计费流量
+func calculateBillingFlow(rawIn, rawOut int64, tunnel *model.Tunnel) (int64, int64) {
 	ratio := float64(tunnel.TrafficRatio)
-	flowType := tunnel.Flow // 1=单向, 2=双向
 
-	inFlow := int64(float64(flowData.D)*ratio) * int64(flowType)
-	outFlow := int64(float64(flowData.U)*ratio) * int64(flowType)
+	inFlow := int64(float64(rawIn) * ratio)
+	outFlow := int64(float64(rawOut) * ratio)
+
+	// Flow: 1=单向(只计流出), 2=双向(流入+流出)
+	if tunnel.Flow == 1 {
+		inFlow = 0
+	}
 
 	return inFlow, outFlow
 }
 
 // updateForwardFlow 更新转发流量
-func updateForwardFlow(forwardId string, inFlow, outFlow int64) {
+func updateForwardFlow(forwardId string, inFlow, outFlow, rawIn, rawOut int64) {
 	forwardFlowLock.Lock()
 	defer forwardFlowLock.Unlock()
 
-	global.DB.Exec("UPDATE forward SET in_flow = in_flow + ?, out_flow = out_flow + ? WHERE id = ?",
-		inFlow, outFlow, forwardId)
+	global.DB.Exec("UPDATE forward SET in_flow = in_flow + ?, out_flow = out_flow + ?, raw_in_flow = raw_in_flow + ?, raw_out_flow = raw_out_flow + ? WHERE id = ?",
+		inFlow, outFlow, rawIn, rawOut, forwardId)
 }
 
 // updateUserFlow 更新用户流量
-func updateUserFlow(userId string, inFlow, outFlow int64) {
+func updateUserFlow(userId string, inFlow, outFlow, rawIn, rawOut int64) {
 	userFlowLock.Lock()
 	defer userFlowLock.Unlock()
 
-	global.DB.Exec("UPDATE user SET in_flow = in_flow + ?, out_flow = out_flow + ? WHERE id = ?",
-		inFlow, outFlow, userId)
+	global.DB.Exec("UPDATE user SET in_flow = in_flow + ?, out_flow = out_flow + ?, raw_in_flow = raw_in_flow + ?, raw_out_flow = raw_out_flow + ? WHERE id = ?",
+		inFlow, outFlow, rawIn, rawOut, userId)
 }
 
 // updateUserTunnelFlow 更新用户隧道流量
-func updateUserTunnelFlow(userTunnelId string, inFlow, outFlow int64) {
+func updateUserTunnelFlow(userTunnelId string, inFlow, outFlow, rawIn, rawOut int64) {
 	if userTunnelId == DEFAULT_USER_TUNNEL_ID {
 		return
 	}
@@ -256,8 +341,45 @@ func updateUserTunnelFlow(userTunnelId string, inFlow, outFlow int64) {
 	tunnelFlowLock.Lock()
 	defer tunnelFlowLock.Unlock()
 
-	global.DB.Exec("UPDATE user_tunnel SET in_flow = in_flow + ?, out_flow = out_flow + ? WHERE id = ?",
-		inFlow, outFlow, userTunnelId)
+	global.DB.Exec("UPDATE user_tunnel SET in_flow = in_flow + ?, out_flow = out_flow + ?, raw_in_flow = raw_in_flow + ?, raw_out_flow = raw_out_flow + ? WHERE id = ?",
+		inFlow, outFlow, rawIn, rawOut, userTunnelId)
+}
+
+// updateNodeFlow 更新节点流量
+func updateNodeFlow(nodeId int64, rawIn, rawOut int64) {
+	// Node流量无锁，因为Node通常是一次请求只更新一个Node，但如果有高并发可能需加锁，暂时直接update
+	global.DB.Exec("UPDATE node SET raw_in_flow = raw_in_flow + ?, raw_out_flow = raw_out_flow + ? WHERE id = ?",
+		rawIn, rawOut, nodeId)
+}
+
+// recordTrafficHistory 记录历史流量
+func recordTrafficHistory(nodeId int64, forwardId, userId string, tunnelId int64, rawIn, rawOut, billingFlow int64) {
+	now := time.Now()
+	// 按小时记录 YYYY-MM-DD HH:00:00
+	timeStr := now.Format("2006-01-02 15:00:00")
+
+	// 尝试 Update
+	result := global.DB.Exec("UPDATE traffic_record SET raw_in = raw_in + ?, raw_out = raw_out + ?, billing_flow = billing_flow + ? WHERE time = ? AND forward_id = ?",
+		rawIn, rawOut, billingFlow, timeStr, forwardId)
+
+	if result.RowsAffected == 0 {
+		fId, _ := strconv.ParseInt(forwardId, 10, 64)
+		uId, _ := strconv.ParseInt(userId, 10, 64)
+
+		// Insert
+		rec := model.TrafficRecord{
+			Time:        timeStr,
+			NodeId:      nodeId,
+			ForwardId:   fId,
+			UserId:      uId,
+			TunnelId:    tunnelId,
+			RawIn:       rawIn,
+			RawOut:      rawOut,
+			BillingFlow: billingFlow,
+			CreatedTime: now.UnixMilli(),
+		}
+		global.DB.Create(&rec)
+	}
 }
 
 // checkUserLimits 检查用户流量和状态限制

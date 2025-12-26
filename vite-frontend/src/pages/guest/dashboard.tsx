@@ -45,6 +45,8 @@ interface Forward {
     remoteAddr: string;
     inFlow: number;
     outFlow: number;
+    rawInFlow?: number;
+    rawOutFlow?: number;
     status: number;
     createdTime: number;
 }
@@ -55,6 +57,9 @@ interface StatisticsFlow {
     flow: number;
     totalFlow: number;
     time: string;
+    rawIn?: number;
+    rawOut?: number;
+    billingFlow?: number;
 }
 
 
@@ -127,25 +132,22 @@ export default function GuestDashboardPage() {
     };
 
     const processFlowChartData = () => {
-        if (!statisticsFlows) return [];
+        if (!statisticsFlows || statisticsFlows.length === 0) return [];
 
-        const now = new Date();
-        const hours: string[] = [];
-        for (let i = 23; i >= 0; i--) {
-            const time = new Date(now.getTime() - i * 60 * 60 * 1000);
-            const hourString = time.getHours().toString().padStart(2, '0') + ':00';
-            hours.push(hourString);
-        }
+        // Sort by time just in case
+        const sortedFlows = [...statisticsFlows].sort((a, b) =>
+            new Date(a.time).getTime() - new Date(b.time).getTime()
+        );
 
-        const flowMap = new Map<string, number>();
-        statisticsFlows.forEach(item => {
-            flowMap.set(item.time, item.flow || 0);
-        });
-
-        return hours.map(hour => ({
-            time: hour,
-            flow: flowMap.get(hour) || 0,
-            formattedFlow: formatFlow(flowMap.get(hour) || 0)
+        return sortedFlows.map(item => ({
+            time: item.time.substring(11, 16), // HH:mm
+            flow: item.flow || 0,
+            billingFlow: item.billingFlow ?? item.flow ?? 0,
+            rawIn: item.rawIn || 0,
+            rawOut: item.rawOut || 0,
+            formattedBilling: formatFlow(item.billingFlow ?? item.flow ?? 0),
+            formattedRawIn: formatFlow(item.rawIn || 0),
+            formattedRawOut: formatFlow(item.rawOut || 0)
         }));
     };
 
@@ -553,9 +555,11 @@ export default function GuestDashboardPage() {
                                                 return (
                                                     <div className="bg-white dark:bg-default-100 border border-default-200 rounded-lg shadow-lg p-3">
                                                         <p className="font-medium text-foreground">{`时间: ${label}`}</p>
-                                                        <p className="text-primary">
-                                                            {`流量: ${formatFlow(payload[0]?.value as number || 0)}`}
-                                                        </p>
+                                                        {payload.map((entry: any, index: number) => (
+                                                            <p key={index} style={{ color: entry.color }}>
+                                                                {`${entry.name}: ${formatFlow(entry.value as number || 0)}`}
+                                                            </p>
+                                                        ))}
                                                     </div>
                                                 );
                                             }
@@ -563,12 +567,31 @@ export default function GuestDashboardPage() {
                                         }}
                                     />
                                     <Line
+                                        name="计费流量"
                                         type="monotone"
-                                        dataKey="flow"
+                                        dataKey="billingFlow"
                                         stroke="#8b5cf6"
                                         strokeWidth={3}
                                         dot={false}
                                         activeDot={{ r: 4, stroke: '#8b5cf6', strokeWidth: 2, fill: '#fff' }}
+                                    />
+                                    <Line
+                                        name="上传(Raw)"
+                                        type="monotone"
+                                        dataKey="rawIn"
+                                        stroke="#10b981"
+                                        strokeWidth={2}
+                                        dot={false}
+                                        activeDot={{ r: 4, stroke: '#10b981', strokeWidth: 2, fill: '#fff' }}
+                                    />
+                                    <Line
+                                        name="下载(Raw)"
+                                        type="monotone"
+                                        dataKey="rawOut"
+                                        stroke="#3b82f6"
+                                        strokeWidth={2}
+                                        dot={false}
+                                        activeDot={{ r: 4, stroke: '#3b82f6', strokeWidth: 2, fill: '#fff' }}
                                     />
                                 </LineChart>
                             </ResponsiveContainer>
@@ -700,11 +723,11 @@ export default function GuestDashboardPage() {
 
                                                     <div className="pt-2 border-t border-gray-200 dark:border-default-200">
                                                         <div className="grid grid-cols-3 gap-1 text-xs">
-                                                            <div className="text-center">
+                                                            <div className="text-center" title={`物理上传: ${formatFlow(forward.rawInFlow || 0)}`}>
                                                                 <div className="text-default-500 mb-1">上传</div>
                                                                 <div className="font-medium text-green-600 dark:text-green-400 truncate">{formatFlow(forward.inFlow || 0)}</div>
                                                             </div>
-                                                            <div className="text-center">
+                                                            <div className="text-center" title={`物理下载: ${formatFlow(forward.rawOutFlow || 0)}`}>
                                                                 <div className="text-default-500 mb-1">下载</div>
                                                                 <div className="font-medium text-orange-600 dark:text-orange-400 truncate">{formatFlow(forward.outFlow || 0)}</div>
                                                             </div>

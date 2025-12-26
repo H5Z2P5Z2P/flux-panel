@@ -226,6 +226,9 @@ func (h *ssHandler) Handle(ctx context.Context, conn net.Conn, opts ...handler.H
 
 	t := time.Now()
 	log.Infof("%s <-> %s", conn.RemoteAddr(), ro.Host)
+
+	cc = stats_wrapper.WrapConn(cc, &pStats)
+
 	xnet.Transport(conn, cc)
 	log.WithFields(map[string]any{
 		"duration": time.Since(t),

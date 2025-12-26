@@ -8,6 +8,8 @@ type UserTunnel struct {
 	InFlow        int64 `json:"inFlow"`
 	OutFlow       int64 `json:"outFlow"`
 	FlowResetTime int64 `json:"flowResetTime"`
+	RawInFlow     int64 `json:"rawInFlow"`
+	RawOutFlow    int64 `json:"rawOutFlow"`
 	ExpTime       int64 `json:"expTime"`
 	SpeedId       int   `json:"speedId"`
 	Num           int   `json:"num"`

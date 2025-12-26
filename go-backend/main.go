@@ -11,6 +11,47 @@ import (
 	"go-backend/utils"
 )
 
+// createIndexes 创建数据库索引以提升查询性能
+func createIndexes() {
+	fmt.Println("📊 Creating database indexes...")
+
+	// TrafficRecord 表索引 - 提升历史流量查询性能
+	indexes := []struct {
+		name string
+		sql  string
+	}{
+		{"idx_traffic_time", "CREATE INDEX IF NOT EXISTS idx_traffic_time ON traffic_record(time DESC)"},
+		{"idx_traffic_user_time", "CREATE INDEX IF NOT EXISTS idx_traffic_user_time ON traffic_record(user_id, time DESC)"},
+		{"idx_traffic_node_time", "CREATE INDEX IF NOT EXISTS idx_traffic_node_time ON traffic_record(node_id, time DESC)"},
+		{"idx_traffic_forward_time", "CREATE INDEX IF NOT EXISTS idx_traffic_forward_time ON traffic_record(forward_id, time DESC)"},
+		{"idx_traffic_user_node_time", "CREATE INDEX IF NOT EXISTS idx_traffic_user_node_time ON traffic_record(user_id, node_id, time DESC)"},
+
+		// Forward 表索引 - 提升转发查询性能
+		{"idx_forward_user_id", "CREATE INDEX IF NOT EXISTS idx_forward_user_id ON forward(user_id)"},
+		{"idx_forward_tunnel_id", "CREATE INDEX IF NOT EXISTS idx_forward_tunnel_id ON forward(tunnel_id)"},
+
+		// User 表索引
+		{"idx_user_status", "CREATE INDEX IF NOT EXISTS idx_user_status ON user(status)"},
+
+		// UserTunnel 表索引
+		{"idx_user_tunnel_user_id", "CREATE INDEX IF NOT EXISTS idx_user_tunnel_user_id ON user_tunnel(user_id)"},
+		{"idx_user_tunnel_tunnel_id", "CREATE INDEX IF NOT EXISTS idx_user_tunnel_tunnel_id ON user_tunnel(tunnel_id)"},
+
+		// UPSERT 唯一索引 (Phase 4)
+		{"idx_traffic_unique", "CREATE UNIQUE INDEX IF NOT EXISTS idx_traffic_unique ON traffic_record(time, forward_id, user_id, node_id, tunnel_id)"},
+	}
+
+	for _, idx := range indexes {
+		if err := global.DB.Exec(idx.sql).Error; err != nil {
+			fmt.Printf("⚠️ Failed to create index %s: %v\n", idx.name, err)
+		} else {
+			fmt.Printf("  ✓ %s\n", idx.name)
+		}
+	}
+
+	fmt.Println("✅ Database indexes created successfully")
+}
+
 func main() {
 	// 1. 初始化配置
 	config.InitConfig()
@@ -35,10 +76,16 @@ func main() {
 			&model.StatisticsFlow{},
 			&model.ViteConfig{},
 			&model.GuestLink{},
+			&model.TrafficRecord{},
 		)
 		if err != nil {
 			fmt.Printf("❌ AutoMigrate failed: %v\n", err)
+		} else {
+			fmt.Println("✅ Schema migrated successfully")
 		}
+
+		// 创建性能优化索引
+		createIndexes()
 
 		// Seed Admin User
 		var count int64

@@ -385,7 +385,7 @@ func buildUserInfoDto(user *model.User) dto.UserInfoDto {
 
 func (s *UserService) GetTunnelPermissions(userId int64) []dto.UserTunnelDetailDto {
 	var relations []model.UserTunnel
-	global.DB.Where("user_id = ?", userId).Find(&relations)
+	global.DB.Where("user_id = ? AND status = ?", userId, 1).Find(&relations)
 
 	resultList := make([]dto.UserTunnelDetailDto, 0, len(relations))
 	for _, rel := range relations {

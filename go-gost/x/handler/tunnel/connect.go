@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/go-gost/core/logger"
+	"github.com/go-gost/core/observer/stats"
 	"github.com/go-gost/relay"
 	xnet "github.com/go-gost/x/internal/net"
+	stats_wrapper "github.com/go-gost/x/observer/stats/wrapper"
 )
 
 func (h *tunnelHandler) handleConnect(ctx context.Context, req *relay.Request, conn net.Conn, network, srcAddr string, dstAddr string, tunnelID relay.TunnelID, log logger.Logger) error {
@@ -116,6 +118,14 @@ func (h *tunnelHandler) handleConnect(ctx context.Context, req *relay.Request, c
 
 	t := time.Now()
 	log.Debugf("%s <-> %s", conn.RemoteAddr(), cc.RemoteAddr())
+
+	// Retrieve stats from the client connection wrapper
+	var pStats stats.Stats
+	if s, ok := conn.(stats_wrapper.Stater); ok {
+		pStats = s.Stats()
+	}
+	cc = stats_wrapper.WrapConn(cc, pStats)
+
 	xnet.Transport(conn, cc)
 	log.WithFields(map[string]any{
 		"duration": time.Since(t),

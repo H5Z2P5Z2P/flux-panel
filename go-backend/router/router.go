@@ -30,7 +30,9 @@ func InitRouter() *gin.Engine {
 		tunnelController := new(controller.TunnelController)
 		forwardController := new(controller.ForwardController)
 		openAPIController := new(controller.OpenAPIController)
+
 		speedLimitController := new(controller.SpeedLimitController)
+		statisticsController := new(controller.StatisticsController)
 
 		// Public Routes
 		api.POST("/user/login", userController.Login)
@@ -146,6 +148,14 @@ func InitRouter() *gin.Engine {
 		openAPI := api.Group("/open_api")
 		{
 			openAPI.GET("/sub_store", openAPIController.SubStore)
+		}
+
+		// Statistics
+		statistics := api.Group("/statistics")
+		statistics.Use(middleware.Auth())
+		{
+			statistics.GET("/dashboard", statisticsController.GetDashboard)
+			statistics.POST("/history", statisticsController.GetHistory)
 		}
 
 		// Captcha

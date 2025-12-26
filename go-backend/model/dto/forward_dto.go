@@ -38,4 +38,6 @@ type ForwardResponseDto struct {
 	Strategy      string `json:"strategy"`
 	Inx           int    `json:"inx"`
 	InterfaceName string `json:"interfaceName"`
+	RawInFlow     int64  `json:"rawInFlow"`
+	RawOutFlow    int64  `json:"rawOutFlow"`
 }

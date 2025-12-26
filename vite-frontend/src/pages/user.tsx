@@ -24,6 +24,7 @@ import { RadioGroup, Radio } from "@heroui/radio";
 import { DatePicker } from "@heroui/date-picker";
 import { Spinner } from "@heroui/spinner";
 import { Progress } from "@heroui/progress";
+import { Switch } from "@heroui/switch";
 
 import toast from 'react-hot-toast';
 import {
@@ -65,6 +66,28 @@ interface ForwardForm {
   interfaceName?: string;
   strategy: string;
 }
+
+interface AddressItem {
+  id: number;
+  address: string;
+  copying: boolean;
+}
+
+interface DiagnosisResult {
+  forwardName: string;
+  timestamp: number;
+  results: Array<{
+    success: boolean;
+    description: string;
+    nodeName: string;
+    nodeId: string;
+    targetIp: string;
+    targetPort?: number;
+    message?: string;
+    averageTime?: number;
+    packetLoss?: number;
+  }>;
+}
 import {
   getAllUsers,
   createUser,
@@ -82,7 +105,10 @@ import {
   getForwardList,
   createForward,
   updateForward,
-  deleteForward
+  deleteForward,
+  pauseForwardService,
+  resumeForwardService,
+  diagnoseForward
 } from '@/api';
 import { SearchIcon, EditIcon, DeleteIcon, UserIcon, SettingsIcon } from '@/components/icons';
 import { parseDate } from "@internationalized/date";
@@ -214,6 +240,16 @@ export default function UserPage() {
   // 其他数据
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
   const [speedLimits, setSpeedLimits] = useState<SpeedLimit[]>([]);
+
+  // 诊断和地址弹窗相关状态
+  const [diagnosisModalOpen, setDiagnosisModalOpen] = useState(false);
+  const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+  const [currentDiagnosisForward, setCurrentDiagnosisForward] = useState<Forward | null>(null);
+  const [diagnosisResult, setDiagnosisResult] = useState<DiagnosisResult | null>(null);
+
+  const [addressModalOpen, setAddressModalOpen] = useState(false);
+  const [addressModalTitle, setAddressModalTitle] = useState('');
+  const [addressList, setAddressList] = useState<AddressItem[]>([]);
 
   // 生命周期
   useEffect(() => {
@@ -510,7 +546,12 @@ export default function UserPage() {
       const res = await getForwardList();
       if (res.code === 0) {
         const allForwards = res.data || [];
-        const userForwards = allForwards.filter((f: Forward) => f.userId === userId);
+        const userForwards = allForwards
+          .filter((f: Forward) => f.userId === userId)
+          .map((f: any) => ({
+            ...f,
+            serviceRunning: f.status === 1
+          }));
         setCurrentForwards(userForwards);
       } else {
         toast.error(res.msg || '获取转发列表失败');
@@ -639,6 +680,240 @@ export default function UserPage() {
     } finally {
       setForwardSubmitLoading(false);
     }
+  };
+
+  // 处理服务开关
+  const handleServiceToggle = async (forward: Forward) => {
+    if (forward.status !== 1 && forward.status !== 0) {
+      toast.error('转发状态异常，无法操作');
+      return;
+    }
+
+    const targetState = !forward.serviceRunning;
+
+    try {
+      // 乐观更新UI
+      setCurrentForwards(prev => prev.map(f =>
+        f.id === forward.id
+          ? { ...f, serviceRunning: targetState }
+          : f
+      ));
+
+      let res;
+      if (targetState) {
+        res = await resumeForwardService(forward.id);
+      } else {
+        res = await pauseForwardService(forward.id);
+      }
+
+      if (res.code === 0) {
+        toast.success(targetState ? '服务已启动' : '服务已暂停');
+        // 更新转发状态
+        setCurrentForwards(prev => prev.map(f =>
+          f.id === forward.id
+            ? { ...f, status: targetState ? 1 : 0 }
+            : f
+        ));
+      } else {
+        // 操作失败，恢复UI状态
+        setCurrentForwards(prev => prev.map(f =>
+          f.id === forward.id
+            ? { ...f, serviceRunning: !targetState }
+            : f
+        ));
+        toast.error(res.msg || '操作失败');
+      }
+    } catch (error) {
+      // 操作失败，恢复UI状态
+      setCurrentForwards(prev => prev.map(f =>
+        f.id === forward.id
+          ? { ...f, serviceRunning: !targetState }
+          : f
+      ));
+      console.error('服务开关操作失败:', error);
+      toast.error('网络错误，操作失败');
+    }
+  };
+
+  // 诊断转发
+  const handleDiagnose = async (forward: Forward) => {
+    setCurrentDiagnosisForward(forward);
+    setDiagnosisModalOpen(true);
+    setDiagnosisLoading(true);
+    setDiagnosisResult(null);
+
+    try {
+      const response = await diagnoseForward(forward.id);
+      if (response.code === 0) {
+        setDiagnosisResult(response.data);
+      } else {
+        toast.error(response.msg || '诊断失败');
+        setDiagnosisResult({
+          forwardName: forward.name,
+          timestamp: Date.now(),
+          results: [{
+            success: false,
+            description: '诊断失败',
+            nodeName: '-',
+            nodeId: '-',
+            targetIp: forward.remoteAddr.split(',')[0] || '-',
+            message: response.msg || '诊断过程中发生错误'
+          }]
+        });
+      }
+    } catch (error) {
+      console.error('诊断失败:', error);
+      toast.error('网络错误，请重试');
+      setDiagnosisResult({
+        forwardName: forward.name,
+        timestamp: Date.now(),
+        results: [{
+          success: false,
+          description: '网络错误',
+          nodeName: '-',
+          nodeId: '-',
+          targetIp: forward.remoteAddr.split(',')[0] || '-',
+          message: '无法连接到服务器'
+        }]
+      });
+    } finally {
+      setDiagnosisLoading(false);
+    }
+  };
+
+  // 格式化入口地址
+  const formatInAddress = (ipString: string, port: number): string => {
+    if (!ipString || !port) return '';
+
+    const ips = ipString.split(',').map(ip => ip.trim()).filter(ip => ip);
+    if (ips.length === 0) return '';
+
+    if (ips.length === 1) {
+      const ip = ips[0];
+      if (ip.includes(':') && !ip.startsWith('[')) {
+        return `[${ip}]:${port}`;
+      } else {
+        return `${ip}:${port}`;
+      }
+    }
+
+    const firstIp = ips[0];
+    let formattedFirstIp;
+    if (firstIp.includes(':') && !firstIp.startsWith('[')) {
+      formattedFirstIp = `[${firstIp}]`;
+    } else {
+      formattedFirstIp = firstIp;
+    }
+
+    return `${formattedFirstIp}:${port} (+${ips.length - 1})`;
+  };
+
+  // 格式化远程地址
+  const formatRemoteAddress = (addressString: string): string => {
+    if (!addressString) return '';
+
+    const addresses = addressString.split(',').map(addr => addr.trim()).filter(addr => addr);
+    if (addresses.length === 0) return '';
+    if (addresses.length === 1) return addresses[0];
+
+    return `${addresses[0]} (+${addresses.length - 1})`;
+  };
+
+  // 检查是否有多个地址
+  const hasMultipleAddresses = (addressString: string): boolean => {
+    if (!addressString) return false;
+    const addresses = addressString.split(',').map(addr => addr.trim()).filter(addr => addr);
+    return addresses.length > 1;
+  };
+
+  // 复制到剪贴板
+  const copyToClipboard = async (text: string, label: string = '内容') => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for non-secure context
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        textArea.style.top = "0";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          document.execCommand('copy');
+        } catch (err) {
+          console.error('Fallback copy failed', err);
+          throw new Error('Fallback copy failed');
+        }
+        document.body.removeChild(textArea);
+      }
+      toast.success(`已复制${label}`);
+    } catch (error) {
+      console.error('复制失败:', error);
+      toast.error('复制失败');
+    }
+  };
+
+  // 显示地址列表弹窗
+  const showAddressModal = (addressString: string, port: number | null, title: string) => {
+    if (!addressString) return;
+
+    let addresses: string[];
+    if (port !== null) {
+      // 入口地址处理
+      const ips = addressString.split(',').map(ip => ip.trim()).filter(ip => ip);
+      if (ips.length <= 1) {
+        copyToClipboard(formatInAddress(addressString, port), title);
+        return;
+      }
+      addresses = ips.map(ip => {
+        if (ip.includes(':') && !ip.startsWith('[')) {
+          return `[${ip}]:${port}`;
+        } else {
+          return `${ip}:${port}`;
+        }
+      });
+    } else {
+      // 远程地址处理
+      addresses = addressString.split(',').map(addr => addr.trim()).filter(addr => addr);
+      if (addresses.length <= 1) {
+        copyToClipboard(addressString, title);
+        return;
+      }
+    }
+
+    setAddressList(addresses.map((address, index) => ({
+      id: index,
+      address,
+      copying: false
+    })));
+    setAddressModalTitle(`${title} (${addresses.length}个)`);
+    setAddressModalOpen(true);
+  };
+
+  // 复制地址
+  const copyAddress = async (addressItem: AddressItem) => {
+    try {
+      setAddressList(prev => prev.map(item =>
+        item.id === addressItem.id ? { ...item, copying: true } : item
+      ));
+      await copyToClipboard(addressItem.address, '地址');
+    } catch (error) {
+      toast.error('复制失败');
+    } finally {
+      setAddressList(prev => prev.map(item =>
+        item.id === addressItem.id ? { ...item, copying: false } : item
+      ));
+    }
+  };
+
+  // 复制所有地址
+  const copyAllAddresses = async () => {
+    if (addressList.length === 0) return;
+    const allAddresses = addressList.map(item => item.address).join('\n');
+    await copyToClipboard(allAddresses, '所有地址');
   };
 
   // 过滤数据
@@ -1474,8 +1749,36 @@ export default function UserPage() {
                       <TableCell>{forward.name}</TableCell>
                       <TableCell>{forward.tunnelName}</TableCell>
                       <TableCell>{forward.strategy}</TableCell>
-                      <TableCell>{forward.remoteAddr}</TableCell>
-                      <TableCell>{forward.inIp}:{forward.inPort}</TableCell>
+                      <TableCell>
+                        <div
+                          className={`cursor-pointer group flex items-center gap-1 max-w-[150px] ${hasMultipleAddresses(forward.remoteAddr) ? 'text-primary' : ''
+                            }`}
+                          onClick={() => showAddressModal(forward.remoteAddr, null, '目标地址')}
+                          title="点击复制或查看详情"
+                        >
+                          <span className="truncate">{formatRemoteAddress(forward.remoteAddr)}</span>
+                          {hasMultipleAddresses(forward.remoteAddr) && (
+                            <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div
+                          className={`cursor-pointer group flex items-center gap-1 max-w-[150px] ${hasMultipleAddresses(forward.inIp) ? 'text-primary' : ''
+                            }`}
+                          onClick={() => showAddressModal(forward.inIp, forward.inPort, '入口地址')}
+                          title="点击复制或查看详情"
+                        >
+                          <span className="truncate">{formatInAddress(forward.inIp, forward.inPort)}</span>
+                          {hasMultipleAddresses(forward.inIp) && (
+                            <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell>{forward.interfaceName || '-'}</TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1 text-xs">
@@ -1484,22 +1787,43 @@ export default function UserPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Chip
-                          color={forward.status === 1 ? 'success' : 'danger'}
-                          size="sm"
-                          variant="flat"
-                        >
-                          {forward.status === 1 ? '正常' : '禁用'}
-                        </Chip>
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            size="sm"
+                            isSelected={forward.serviceRunning}
+                            onValueChange={() => handleServiceToggle(forward)}
+                            isDisabled={forward.status !== 1 && forward.status !== 0}
+                          />
+                          <Chip
+                            color={forward.status === 1 ? 'success' : 'danger'}
+                            size="sm"
+                            variant="flat"
+                          >
+                            {forward.status === 1 ? '正常' : '禁用'}
+                          </Chip>
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Button
                             size="sm"
                             variant="flat"
+                            color="secondary"
+                            isIconOnly
+                            onClick={() => handleDiagnose(forward)}
+                            title="诊断"
+                          >
+                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                            </svg>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="flat"
                             color="primary"
                             isIconOnly
                             onClick={() => handleEditForward(forward)}
+                            title="编辑"
                           >
                             <EditIcon className="w-4 h-4" />
                           </Button>
@@ -1509,6 +1833,7 @@ export default function UserPage() {
                             color="danger"
                             isIconOnly
                             onClick={() => handleDeleteForward(forward.id)}
+                            title="删除"
                           >
                             <DeleteIcon className="w-4 h-4" />
                           </Button>
@@ -1608,6 +1933,165 @@ export default function UserPage() {
         </ModalContent>
       </Modal>
 
+
+      {/* 地址列表弹窗 */}
+      <Modal
+        isOpen={addressModalOpen}
+        onClose={() => setAddressModalOpen(false)}
+        size="md"
+        scrollBehavior="inside"
+        backdrop="blur"
+      >
+        <ModalContent>
+          <ModalHeader className="flex flex-col gap-1">
+            {addressModalTitle}
+            <span className="text-xs text-default-400 font-normal">点击地址可复制</span>
+          </ModalHeader>
+          <ModalBody>
+            <div className="space-y-2">
+              {addressList.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between p-3 rounded-lg bg-default-50 hover:bg-default-100 transition-colors cursor-pointer group"
+                  onClick={() => copyAddress(item)}
+                >
+                  <code className="text-sm font-mono break-all">{item.address}</code>
+                  <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                    {item.copying ? (
+                      <span className="text-xs text-success">已复制</span>
+                    ) : (
+                      <svg className="w-4 h-4 text-default-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                      </svg>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ModalBody>
+          <ModalFooter>
+            <Button
+              color="primary"
+              variant="flat"
+              onPress={copyAllAddresses}
+              size="sm"
+            >
+              复制全部
+            </Button>
+            <Button
+              color="danger"
+              variant="light"
+              onPress={() => setAddressModalOpen(false)}
+              size="sm"
+            >
+              关闭
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* 诊断结果弹窗 */}
+      <Modal
+        isOpen={diagnosisModalOpen}
+        onClose={() => setDiagnosisModalOpen(false)}
+        size="2xl"
+        scrollBehavior="inside"
+        backdrop="blur"
+      >
+        <ModalContent>
+          <ModalHeader>
+            诊断结果 - {currentDiagnosisForward?.name}
+          </ModalHeader>
+          <ModalBody>
+            {diagnosisLoading ? (
+              <div className="flex flex-col items-center justify-center py-12 gap-4">
+                <Spinner size="lg" />
+                <p className="text-default-500">正在诊断连接质量...</p>
+              </div>
+            ) : diagnosisResult ? (
+              <div className="space-y-4">
+                {diagnosisResult.results.map((result, index) => (
+                  <Card key={index} className={`border ${result.success ? 'border-success-200 bg-success-50/20' : 'border-danger-200 bg-danger-50/20'}`}>
+                    <CardBody>
+                      <div className="flex items-start gap-4">
+                        <div className={`mt-1 p-2 rounded-full ${result.success ? 'bg-success-100 text-success' : 'bg-danger-100 text-danger'}`}>
+                          {result.success ? (
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          ) : (
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          )}
+                        </div>
+                        <div className="flex-1 space-y-2">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <h4 className="font-semibold">{result.targetIp}:{result.targetPort}</h4>
+                              <p className="text-sm text-default-500">节点: {result.nodeName} ({result.nodeId})</p>
+                            </div>
+                            {result.success && result.averageTime !== undefined && (
+                              <div className="text-right">
+                                <div className="text-sm font-medium">{result.averageTime}ms</div>
+                                <div className="text-xs text-default-500">延迟</div>
+                              </div>
+                            )}
+                          </div>
+
+                          {result.message && (
+                            <div className={`text-sm ${result.success ? 'text-default-600' : 'text-danger'}`}>
+                              {result.message}
+                            </div>
+                          )}
+
+                          {result.success && result.packetLoss !== undefined && (
+                            <div className="flex gap-4 text-sm bg-background/60 p-2 rounded">
+                              <div>
+                                <span className="text-default-500">丢包率: </span>
+                                <span className={result.packetLoss > 0 ? 'text-warning' : 'text-success'}>
+                                  {result.packetLoss}%
+                                </span>
+                              </div>
+                              {result.averageTime !== undefined && (
+                                <div className="ml-auto">
+                                  {(() => {
+                                    if (result.averageTime < 30 && result.packetLoss === 0) return <span className="text-success text-xs font-medium px-2 py-0.5 bg-success-100 rounded">🚀 优秀</span>;
+                                    if (result.averageTime < 50 && result.packetLoss === 0) return <span className="text-success text-xs font-medium px-2 py-0.5 bg-success-100 rounded">✨ 很好</span>;
+                                    if (result.averageTime < 100 && result.packetLoss < 1) return <span className="text-primary text-xs font-medium px-2 py-0.5 bg-primary-100 rounded">👍 良好</span>;
+                                    if (result.averageTime < 200 && result.packetLoss < 5) return <span className="text-warning text-xs font-medium px-2 py-0.5 bg-warning-100 rounded">😐 一般</span>;
+                                    return <span className="text-danger text-xs font-medium px-2 py-0.5 bg-danger-100 rounded">😵 较差</span>;
+                                  })()}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </CardBody>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-default-500">
+                暂无诊断结果
+              </div>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            <Button onPress={() => setDiagnosisModalOpen(false)}>
+              关闭
+            </Button>
+            <Button
+              color="primary"
+              onPress={() => currentDiagnosisForward && handleDiagnose(currentDiagnosisForward)}
+              isLoading={diagnosisLoading}
+            >
+              重新诊断
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
 
     </div >
 

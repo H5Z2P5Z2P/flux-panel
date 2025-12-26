@@ -281,7 +281,7 @@ func (s *ForwardService) GetAllForwards(ctxUser *utils.UserClaims) *result.Resul
 	if ctxUser.RoleId != 0 {
 		tx = tx.Where("user_id = ?", ctxUser.GetUserId())
 	}
-	tx.Find(&forwards)
+	tx.Order("created_time desc").Find(&forwards)
 
 	var response []dto.ForwardResponseDto
 	for _, f := range forwards {
@@ -312,6 +312,8 @@ func (s *ForwardService) GetAllForwards(ctxUser *utils.UserClaims) *result.Resul
 			Strategy:      f.Strategy,
 			Inx:           f.Inx,
 			InterfaceName: f.InterfaceName,
+			RawInFlow:     f.RawInFlow,
+			RawOutFlow:    f.RawOutFlow,
 		}
 		response = append(response, resDto)
 	}

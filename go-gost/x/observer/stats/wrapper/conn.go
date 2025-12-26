@@ -17,11 +17,19 @@ var (
 	errUnsupport = errors.New("unsupported operation")
 )
 
+type Stater interface {
+	Stats() stats.Stats
+}
+
 type conn struct {
 	net.Conn
 	stats  stats.Stats
 	closed chan struct{}
 	mu     sync.Mutex
+}
+
+func (c *conn) Stats() stats.Stats {
+	return c.stats
 }
 
 func WrapConn(c net.Conn, pStats stats.Stats) net.Conn {
@@ -87,6 +95,10 @@ type packetConn struct {
 	stats stats.Stats
 }
 
+func (c *packetConn) Stats() stats.Stats {
+	return c.stats
+}
+
 func WrapPacketConn(pc net.PacketConn, stats stats.Stats) net.PacketConn {
 	if stats == nil {
 		return pc
@@ -119,6 +131,10 @@ func (c *packetConn) Metadata() metadata.Metadata {
 type udpConn struct {
 	net.PacketConn
 	stats stats.Stats
+}
+
+func (c *udpConn) Stats() stats.Stats {
+	return c.stats
 }
 
 func WrapUDPConn(pc net.PacketConn, stats stats.Stats) udp.Conn {

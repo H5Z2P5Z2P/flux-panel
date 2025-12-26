@@ -16,6 +16,8 @@ type Forward struct {
 	Strategy      string `json:"strategy"`
 	InFlow        int64  `json:"inFlow"`
 	OutFlow       int64  `json:"outFlow"`
+	RawInFlow     int64  `json:"rawInFlow"`
+	RawOutFlow    int64  `json:"rawOutFlow"`
 	Inx           int    `json:"inx"`
 }
 

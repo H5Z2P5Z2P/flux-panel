@@ -16,6 +16,7 @@ import (
 	"github.com/go-gost/core/logger"
 	md "github.com/go-gost/core/metadata"
 	"github.com/go-gost/core/observer"
+	"github.com/go-gost/core/observer/stats"
 	"github.com/go-gost/core/service"
 	"github.com/go-gost/relay"
 	ctxvalue "github.com/go-gost/x/ctx"
@@ -23,6 +24,8 @@ import (
 	stats_util "github.com/go-gost/x/internal/util/stats"
 	rate_limiter "github.com/go-gost/x/limiter/rate"
 	cache_limiter "github.com/go-gost/x/limiter/traffic/cache"
+	xstats "github.com/go-gost/x/observer/stats"
+	stats_wrapper "github.com/go-gost/x/observer/stats/wrapper"
 	xrecorder "github.com/go-gost/x/recorder"
 	"github.com/go-gost/x/registry"
 	xservice "github.com/go-gost/x/service"
@@ -194,10 +197,20 @@ func (h *tunnelHandler) Handle(ctx context.Context, conn net.Conn, opts ...handl
 
 	log.Infof("%s <> %s", conn.RemoteAddr(), conn.LocalAddr())
 
+	pStats := xstats.Stats{}
+	conn = stats_wrapper.WrapConn(conn, &pStats)
+
 	defer func() {
 		if err != nil {
 			conn.Close()
 		}
+		// report stats
+		if h.stats != nil {
+			h.stats.Stats(conn.RemoteAddr().String()).Add(stats.KindTotalConns, 1)
+			h.stats.Stats(conn.RemoteAddr().String()).Add(stats.KindInputBytes, int64(pStats.Get(stats.KindInputBytes)))
+			h.stats.Stats(conn.RemoteAddr().String()).Add(stats.KindOutputBytes, int64(pStats.Get(stats.KindOutputBytes)))
+		}
+
 		log.WithFields(map[string]any{
 			"duration": time.Since(start),
 		}).Infof("%s >< %s", conn.RemoteAddr(), conn.LocalAddr())

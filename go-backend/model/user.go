@@ -14,6 +14,8 @@ type User struct {
 	OutFlow       int64      `json:"outFlow"`
 	Num           int        `json:"num"`
 	FlowResetTime int64      `json:"flowResetTime"`
+	RawInFlow     int64      `json:"rawInFlow"`
+	RawOutFlow    int64      `json:"rawOutFlow"`
 	GuestLink     *GuestLink `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 }
 

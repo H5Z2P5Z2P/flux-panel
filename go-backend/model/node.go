@@ -15,6 +15,8 @@ type Node struct {
 	Http        int     `json:"http"`
 	Tls         int     `json:"tls"`
 	Socks       int     `json:"socks"`
+	RawInFlow   int64   `json:"rawInFlow"`
+	RawOutFlow  int64   `json:"rawOutFlow"`
 }
 
 func (Node) TableName() string {

@@ -218,6 +218,8 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 	}
 	defer cc.Close()
 
+	cc = stats_wrapper.WrapConn(cc, &pStats)
+
 	xnet.Transport(conn, cc)
 
 	return nil

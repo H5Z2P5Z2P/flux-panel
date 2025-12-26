@@ -1,12 +1,16 @@
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Modal, ModalContent, ModalHeader, ModalBody } from "@heroui/modal";
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import toast from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 
-import { getUserPackageInfo, getGuestLink } from "@/api";
+import {
+  getUserPackageInfo,
+  getGuestLink,
+  getStatisticsHistory
+} from "@/api";
 
 interface UserInfo {
   flow: number;
@@ -55,7 +59,14 @@ interface StatisticsFlow {
   flow: number;
   totalFlow: number;
   time: string;
+  rawIn?: number;
+  rawOut?: number;
+  billingFlow?: number;
+  nodeId?: number;
+  forwardId?: number;
 }
+
+
 
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
@@ -63,7 +74,13 @@ export default function DashboardPage() {
   const [userTunnels, setUserTunnels] = useState<UserTunnel[]>([]);
   const [forwardList, setForwardList] = useState<Forward[]>([]);
   const [statisticsFlows, setStatisticsFlows] = useState<StatisticsFlow[]>([]);
+  // const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+
+  // Analytics State
+  const [timeRange, setTimeRange] = useState<'24h' | 'today' | '7d' | '30d'>('24h');
+  const [breakdown, setBreakdown] = useState<'none' | 'node' | 'forward'>('none');
+  const [chartData, setChartData] = useState<any[]>([]);
 
   const [addressModalOpen, setAddressModalOpen] = useState(false);
   const [addressModalTitle, setAddressModalTitle] = useState('');
@@ -166,6 +183,7 @@ export default function DashboardPage() {
     setUserTunnels([]);
     setForwardList([]);
     setStatisticsFlows([]);
+    // setDashboardStats(null);
 
     // 检查用户是否是管理员
     const adminStatus = localStorage.getItem('admin');
@@ -184,37 +202,155 @@ export default function DashboardPage() {
         setUserInfo(data.userInfo || {});
         setUserTunnels(data.tunnelPermissions || []);
         setForwardList(data.forwards || []);
-        setStatisticsFlows(data.statisticsFlows || []);
+
+        // 旧的 statisticsFlows 可能是空的或不兼容，我们单独加载
+        // setStatisticsFlows(data.statisticsFlows || []);
 
         // 检查有效期并显示通知
         checkExpirationNotifications(data.userInfo, data.tunnelPermissions || []);
+
+        // 加载历史流量 (根据选择的时间范围)
+        loadHistoryData(data.userInfo?.id);
+
+
+        // Moved loadHistoryData to separate function
+
+
       } else {
         toast.error(res.msg || '获取套餐信息失败');
       }
+
     } catch (error) {
-      console.error('获取套餐信息失败:', error);
-      toast.error('获取套餐信息失败');
+      console.error('获取信息失败:', error);
+      toast.error('获取信息失败');
     } finally {
       setLoading(false);
     }
   };
 
   const formatFlow = (value: number, unit: string = 'bytes'): string => {
-    // 99999 表示无限制
-    if (value === 99999) {
-      return '无限制';
+    if (value === undefined || value === null) return '0 B';
+
+    // Convert GB flow limit to bytes for consistency if strictly needed,
+    // but here 'value' is usually bytes unless unit='gb' is requested for formatted display.
+    // The previous logic for 'gb' unit input:
+    if (unit === 'gb') {
+      // If value is in GB? No, usually value is bytes.
+      // However, userInfo.flow is in GB.
+      if (value === 99999) return '无限制';
+      return value + ' GB';
     }
 
-    if (unit === 'gb') {
-      return value + ' GB';
-    } else {
-      if (value === 0) return '0 B';
-      if (value < 1024) return value + ' B';
-      if (value < 1024 * 1024) return (value / 1024).toFixed(2) + ' KB';
-      if (value < 1024 * 1024 * 1024) return (value / (1024 * 1024)).toFixed(2) + ' MB';
-      return (value / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    if (value === 0) return '0 B';
+    if (value < 1024) return value + ' B';
+    if (value < 1024 * 1024) return (value / 1024).toFixed(2) + ' KB';
+    if (value < 1024 * 1024 * 1024) return (value / (1024 * 1024)).toFixed(2) + ' MB';
+    return (value / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  };
+
+  const loadHistoryData = async (userId?: number) => {
+    if (!userId && !userInfo.id) return;
+    const uid = userId || userInfo.id;
+
+    const end = new Date();
+    let start = new Date();
+    let dimension = 'hour';
+
+    switch (timeRange) {
+      case '24h':
+        start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+        dimension = 'hour';
+        break;
+      case 'today':
+        start = new Date();
+        start.setHours(0, 0, 0, 0);
+        dimension = 'hour';
+        break;
+      case '7d':
+        start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+        dimension = 'day';
+        break;
+      case '30d':
+        start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+        dimension = 'day';
+        break;
+    }
+
+    try {
+      const historyRes = await getStatisticsHistory({
+        startTime: start.toISOString().replace('T', ' ').substring(0, 19),
+        endTime: end.toISOString().replace('T', ' ').substring(0, 19),
+        dimension: dimension,
+        type: 'user',
+        id: uid,
+        groupBy: breakdown === 'none' ? undefined : breakdown
+      });
+
+      if (historyRes.code === 0) {
+        processChartData(historyRes.data || []);
+      }
+    } catch (e) {
+      console.error("Failed to fetch history", e);
     }
   };
+
+  const processChartData = (data: StatisticsFlow[]) => {
+    // Determine data/grouping mapping
+    // If breakdown is 'none', data is simple timeline.
+    // If breakdown is 'node' or 'forward', data contains nodeId/forwardId.
+
+    // Group by time first
+    const timeMap = new Map<string, any>();
+
+    data.forEach(item => {
+      let timeKey = item.time;
+      if (timeRange === '24h' || timeRange === 'today') {
+        timeKey = timeKey.substring(11, 16); // HH:mm
+      } else {
+        timeKey = timeKey.substring(5, 10); // MM-DD
+      }
+
+      if (!timeMap.has(timeKey)) {
+        timeMap.set(timeKey, { time: timeKey });
+      }
+      const entry = timeMap.get(timeKey);
+
+      let key = 'total';
+      let name = 'Total';
+
+      if (breakdown === 'node') {
+        key = `node_${item.nodeId}`; // We need node name map, currently fetching IDs
+        // Ideally we map IDs to names. We have forwardList but not nodeList in this component?
+        // Actually we don't have Node List in Dashboard state.
+        // For now use ID.
+      } else if (breakdown === 'forward') {
+        key = `fwd_${item.forwardId}`;
+        // We can map forwardId to name using forwardList
+        const fwd = forwardList.find(f => f.id === item.forwardId);
+        if (fwd) name = fwd.name;
+      }
+
+      if (breakdown === 'none') {
+        entry['billing'] = (entry['billing'] || 0) + (item.billingFlow || 0);
+        entry['rawIn'] = (entry['rawIn'] || 0) + (item.rawIn || 0);
+        entry['rawOut'] = (entry['rawOut'] || 0) + (item.rawOut || 0);
+      } else {
+        // Stacked data
+        // entry[key] = flow
+        entry[key] = (entry[key] || 0) + (item.billingFlow || 0);
+        // Store name for tooltip if possible, or just use key
+      }
+    });
+
+    const processed = Array.from(timeMap.values()).sort((a, b) => a.time.localeCompare(b.time));
+    setChartData(processed);
+  };
+
+  useEffect(() => {
+    loadHistoryData();
+  }, [timeRange, breakdown]); // Reload when controls change
+
+
 
   const formatNumber = (value: number): string => {
     // 99999 表示无限制
@@ -224,31 +360,8 @@ export default function DashboardPage() {
     return value.toString();
   };
 
-  // 处理24小时流量统计数据
-  const processFlowChartData = () => {
-    // 生成最近24小时的时间数组（从当前小时往前推24小时）
-    const now = new Date();
-    const hours: string[] = [];
-    for (let i = 23; i >= 0; i--) {
-      const time = new Date(now.getTime() - i * 60 * 60 * 1000);
-      const hourString = time.getHours().toString().padStart(2, '0') + ':00';
-      hours.push(hourString);
-    }
+  // const processFlowChartData = () => { ... } // Replaced by processChartData
 
-    // 创建数据映射
-    const flowMap = new Map<string, number>();
-    statisticsFlows.forEach(item => {
-      flowMap.set(item.time, item.flow || 0);
-    });
-
-    // 生成图表数据，没有数据的小时显示为0
-    return hours.map(hour => ({
-      time: hour,
-      flow: flowMap.get(hour) || 0,
-      // 格式化显示用的流量值
-      formattedFlow: formatFlow(flowMap.get(hour) || 0)
-    }));
-  };
 
 
   const getExpStatus = (expTime?: string) => {
@@ -550,7 +663,7 @@ export default function DashboardPage() {
     } catch (error) {
       toast.error('复制失败');
     } finally {
-      setAddressList(prev => prev.map(item =>
+      setAddressList(prev => prev.map((item: AddressItem) =>
         item.id === addressItem.id ? { ...item, copying: false } : item
       ));
     }
@@ -718,11 +831,41 @@ export default function DashboardPage() {
               <path d="M2 10a8 8 0 018-8v8h8a8 8 0 11-16 0z" />
               <path d="M12 2.252A8.014 8.014 0 0117.748 8H12V2.252z" />
             </svg>
-            <h2 className="text-lg lg:text-xl font-semibold text-foreground">24小时流量统计</h2>
+            <h2 className="text-lg lg:text-xl font-semibold text-foreground">流量分析</h2>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <div className="flex bg-default-100 rounded-lg p-1">
+              {['24h', 'today', '7d', '30d'].map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setTimeRange(r as any)}
+                  className={`px-3 py-1 text-xs rounded-md transition-all ${timeRange === r ? 'bg-white dark:bg-black shadow-sm text-foreground font-medium' : 'text-default-500 hover:text-foreground'}`}
+                >
+                  {r === '24h' ? '24小时' : r === 'today' ? '今日' : r === '7d' ? '7天' : '30天'}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex bg-default-100 rounded-lg p-1">
+              {[
+                { k: 'none', l: '总览' },
+                { k: 'forward', l: '按转发' },
+                // {k: 'node', l: '按节点'} // Node list not readily available in state, hide for now or implement later
+              ].map((b) => (
+                <button
+                  key={b.k}
+                  onClick={() => setBreakdown(b.k as any)}
+                  className={`px-3 py-1 text-xs rounded-md transition-all ${breakdown === b.k ? 'bg-white dark:bg-black shadow-sm text-foreground font-medium' : 'text-default-500 hover:text-foreground'}`}
+                >
+                  {b.l}
+                </button>
+              ))}
+            </div>
           </div>
         </CardHeader>
         <CardBody className="pt-0">
-          {statisticsFlows.length === 0 ? (
+          {chartData.length === 0 ? (
             <div className="text-center py-12">
               <svg className="w-12 h-12 text-default-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -735,7 +878,7 @@ export default function DashboardPage() {
               {/* 流量趋势图 */}
               <div className="h-64 lg:h-80 w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={processFlowChartData()}>
+                  <LineChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                     <XAxis
                       dataKey="time"
@@ -749,7 +892,6 @@ export default function DashboardPage() {
                       axisLine={{ stroke: '#e5e7eb', strokeWidth: 1 }}
                       tickFormatter={(value) => {
                         if (value === 0) return '0';
-                        if (value < 1024) return `${value}B`;
                         if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)}K`;
                         if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)}M`;
                         return `${(value / (1024 * 1024 * 1024)).toFixed(1)}G`;
@@ -762,7 +904,13 @@ export default function DashboardPage() {
                             <div className="bg-white dark:bg-default-100 border border-default-200 rounded-lg shadow-lg p-3">
                               <p className="font-medium text-foreground">{`时间: ${label}`}</p>
                               <p className="text-primary">
-                                {`流量: ${formatFlow(payload[0]?.value as number || 0)}`}
+                                {`计费流量: ${payload[0]?.payload.formattedBilling}`}
+                              </p>
+                              <p className="text-green-500">
+                                {`上传(Raw): ${payload[0]?.payload.formattedRawIn}`}
+                              </p>
+                              <p className="text-blue-500">
+                                {`下载(Raw): ${payload[0]?.payload.formattedRawOut}`}
                               </p>
                             </div>
                           );
@@ -771,12 +919,31 @@ export default function DashboardPage() {
                       }}
                     />
                     <Line
+                      name="计费流量"
                       type="monotone"
-                      dataKey="flow"
+                      dataKey="billingFlow"
                       stroke="#8b5cf6"
                       strokeWidth={3}
                       dot={false}
                       activeDot={{ r: 4, stroke: '#8b5cf6', strokeWidth: 2, fill: '#fff' }}
+                    />
+                    <Line
+                      name="上传(Raw)"
+                      type="monotone"
+                      dataKey="rawIn"
+                      stroke="#10b981"
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4, stroke: '#10b981', strokeWidth: 2, fill: '#fff' }}
+                    />
+                    <Line
+                      name="下载(Raw)"
+                      type="monotone"
+                      dataKey="rawOut"
+                      stroke="#3b82f6"
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4, stroke: '#3b82f6', strokeWidth: 2, fill: '#fff' }}
                     />
                   </LineChart>
                 </ResponsiveContainer>

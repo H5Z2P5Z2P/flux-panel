@@ -92,4 +92,8 @@ export const verifyCaptcha = (data: { captchaId: string; trackData: string }) =>
 
 // 访客相关接口
 export const getGuestLink = (userId?: number) => Network.get("/user/guest_link", userId ? { userId } : {});
-export const getGuestDashboard = (token: string) => Network.get(`/guest/dashboard`, { token }); 
+export const getGuestDashboard = (token: string) => Network.get(`/guest/dashboard`, { token });
+
+// 统计分析接口
+export const getStatisticsDashboard = () => Network.get("/statistics/dashboard");
+export const getStatisticsHistory = (data: any) => Network.post("/statistics/history", data); 
