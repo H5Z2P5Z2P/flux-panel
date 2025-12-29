@@ -208,6 +208,10 @@ func (s *UserService) UpdateUser(dto dto.UserUpdateDto) *result.Result {
 	if err := global.DB.Save(&user).Error; err != nil {
 		return result.Err(-1, "更新失败")
 	}
+
+	// Sync limits to UserTunnel
+	go s.SyncLimits(user.ID)
+
 	return result.Ok("更新成功")
 }
 
@@ -535,4 +539,21 @@ func (s *UserService) deleteUserRelatedData(user *model.User) error {
 	}
 
 	return nil
+}
+
+func (s *UserService) SyncLimits(userId int64) {
+	var user model.User
+	if err := global.DB.First(&user, userId).Error; err != nil {
+		return
+	}
+
+	var userTunnels []model.UserTunnel
+	global.DB.Where("user_id = ?", userId).Find(&userTunnels)
+
+	for _, ut := range userTunnels {
+		ut.ExpTime = user.ExpTime
+		ut.FlowResetTime = user.FlowResetTime
+		ut.Flow = user.Flow
+		global.DB.Save(&ut)
+	}
 }
