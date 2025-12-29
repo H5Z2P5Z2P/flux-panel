@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { Input, Textarea } from "@heroui/input";
+import { Input } from "@heroui/input";
 import {
   Table,
   TableHeader,
