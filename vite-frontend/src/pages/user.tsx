@@ -123,6 +123,7 @@ export default function UserPage() {
   const [isEdit, setIsEdit] = useState(false);
   const [userForm, setUserForm] = useState<UserForm>({
     user: '',
+    pwd: '',
     status: 1,
     flow: 100,
     num: 10,
@@ -250,6 +251,7 @@ export default function UserPage() {
     setIsEdit(false);
     setUserForm({
       user: '',
+      pwd: '',
       status: 1,
       flow: 100,
       num: 10,
@@ -265,6 +267,7 @@ export default function UserPage() {
       id: user.id,
       name: user.name,
       user: user.user,
+      pwd: '',
       status: user.status,
       flow: user.flow,
       num: user.num,
@@ -759,6 +762,14 @@ export default function UserPage() {
                 value={userForm.user}
                 onChange={(e) => setUserForm(prev => ({ ...prev, user: e.target.value }))}
                 isRequired
+              />
+              <Input
+                label="密码"
+                value={userForm.pwd || ''}
+                onChange={(e) => setUserForm(prev => ({ ...prev, pwd: e.target.value }))}
+                placeholder={isEdit ? "留空则不修改" : "留空则无密码"}
+                description={isEdit ? "若不修改密码请留空" : undefined}
+                type="password"
               />
               <Input
                 label="流量限制(GB)"
