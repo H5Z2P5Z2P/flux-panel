@@ -474,18 +474,48 @@ export default function UserPage() {
     tunnel => !userTunnels.some(ut => ut.tunnelId === tunnel.id)
   );
 
+  const copyToClipboard = (text: string) => {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    } else {
+      // Fallback for non-secure context
+      return new Promise<void>((resolve, reject) => {
+        try {
+          const textArea = document.createElement("textarea");
+          textArea.value = text;
+          textArea.style.position = "fixed";
+          textArea.style.left = "-9999px";
+          textArea.style.top = "0";
+          document.body.appendChild(textArea);
+          textArea.focus();
+          textArea.select();
+          const successful = document.execCommand('copy');
+          document.body.removeChild(textArea);
+          if (successful) {
+            resolve();
+          } else {
+            reject(new Error("Copy failed"));
+          }
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }
+  };
+
   const handleShare = async (user: User) => {
     try {
       const response = await getGuestLink(user.id);
       if (response.code === 0 && response.data) {
         const link = `${window.location.origin}/guest/dashboard?token=${response.data.token}`;
-        navigator.clipboard.writeText(link);
+        await copyToClipboard(link);
         toast.success("链接已复制到剪贴板");
       } else {
         toast.error("获取链接失败: " + response.msg);
       }
-    } catch (e) {
-      toast.error("网络错误");
+    } catch (e: any) {
+      console.error(e);
+      toast.error("操作失败: " + (e.message || "未知错误"));
     }
   };
 
