@@ -35,36 +35,9 @@ import {
   SpeedLimit,
   Pagination as PaginationType
 } from '@/types';
+import ForwardList from '@/components/ForwardList';
 
-interface Forward {
-  id: number;
-  name: string;
-  tunnelId: number;
-  tunnelName: string;
-  inIp: string;
-  inPort: number;
-  remoteAddr: string;
-  interfaceName?: string;
-  strategy: string;
-  status: number;
-  inFlow: number;
-  outFlow: number;
-  serviceRunning: boolean;
-  createdTime: string;
-  userName?: string;
-  userId?: number;
-}
 
-interface ForwardForm {
-  id?: number;
-  userId?: number;
-  name: string;
-  tunnelId: number | null;
-  inPort: number | null;
-  remoteAddr: string;
-  interfaceName?: string;
-  strategy: string;
-}
 import {
   getAllUsers,
   createUser,
@@ -78,11 +51,7 @@ import {
   getSpeedLimitList,
 
   resetUserFlow,
-  getGuestLink,
-  getForwardList,
-  createForward,
-  updateForward,
-  deleteForward
+  getGuestLink
 } from '@/api';
 import { SearchIcon, EditIcon, DeleteIcon, UserIcon, SettingsIcon } from '@/components/icons';
 import { parseDate } from "@internationalized/date";
@@ -198,18 +167,6 @@ export default function UserPage() {
 
   // 转发管理相关状态
   const { isOpen: isForwardModalOpen, onOpen: onForwardModalOpen, onClose: onForwardModalClose } = useDisclosure();
-  const [currentForwards, setCurrentForwards] = useState<Forward[]>([]);
-  const [forwardViewMode, setForwardViewMode] = useState<'list' | 'form'>('list');
-  const [forwardForm, setForwardForm] = useState<ForwardForm>({
-    name: '',
-    tunnelId: null,
-    inPort: null,
-    remoteAddr: '',
-    interfaceName: '',
-    strategy: 'fifo'
-  });
-  const [forwardLoading, setForwardLoading] = useState(false);
-  const [forwardSubmitLoading, setForwardSubmitLoading] = useState(false);
 
   // 其他数据
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
@@ -504,141 +461,9 @@ export default function UserPage() {
 
 
   // 转发管理相关函数
-  const loadUserForwards = async (userId: number) => {
-    setForwardLoading(true);
-    try {
-      const res = await getForwardList();
-      if (res.code === 0) {
-        const allForwards = res.data || [];
-        const userForwards = allForwards.filter((f: Forward) => f.userId === userId);
-        setCurrentForwards(userForwards);
-      } else {
-        toast.error(res.msg || '获取转发列表失败');
-      }
-    } catch (error) {
-      toast.error('获取转发列表失败');
-    } finally {
-      setForwardLoading(false);
-    }
-  };
-
   const handleManageForwards = (user: User) => {
     setCurrentUser(user);
-    setForwardViewMode('list');
     onForwardModalOpen();
-    loadUserForwards(user.id);
-    loadUserTunnels(user.id); // Load allowed tunnels for the user
-  };
-
-  const handleAddForward = () => {
-    setForwardForm({
-      name: '',
-      tunnelId: null,
-      inPort: null,
-      remoteAddr: '',
-      interfaceName: '',
-      strategy: 'fifo'
-    });
-    setForwardViewMode('form');
-  };
-
-  const handleEditForward = (forward: Forward) => {
-    setForwardForm({
-      id: forward.id,
-      userId: forward.userId,
-      name: forward.name,
-      tunnelId: forward.tunnelId,
-      inPort: forward.inPort,
-      remoteAddr: forward.remoteAddr ? forward.remoteAddr.split(',').join('\n') : '',
-      interfaceName: forward.interfaceName || '',
-      strategy: forward.strategy || 'fifo'
-    });
-    setForwardViewMode('form');
-  };
-
-  const handleDeleteForward = async (id: number) => {
-    if (!confirm('确定要删除这条转发规则吗？')) return;
-    try {
-      const res = await deleteForward(id);
-      if (res.code === 0) {
-        toast.success('删除成功');
-        if (currentUser) loadUserForwards(currentUser.id);
-      } else {
-        toast.error(res.msg || '删除失败');
-      }
-    } catch (error) {
-      toast.error('删除失败');
-    }
-  };
-
-  const handleSubmitForward = async () => {
-    if (!currentUser) return;
-    if (!forwardForm.name || !forwardForm.tunnelId || !forwardForm.remoteAddr) {
-      toast.error('请填写完整信息');
-      return;
-    }
-
-    setForwardSubmitLoading(true);
-    try {
-      const processedRemoteAddr = forwardForm.remoteAddr
-        .split('\n')
-        .map(addr => addr.trim())
-        .filter(addr => addr)
-        .join(',');
-
-      const addressCount = processedRemoteAddr.split(',').length;
-
-      const data = {
-        ...forwardForm,
-        remoteAddr: processedRemoteAddr,
-        strategy: addressCount > 1 ? forwardForm.strategy : 'fifo'
-      };
-
-      if (forwardViewMode === 'form' && !data.id) {
-        // Create - backend needs UserId context? 
-        // API CreateForward doesn't take UserId in DTO normally (takes from Claims).
-        // But as Admin, how do I create for another user?
-        // Ah, typically Admin 'Assigns' forward?
-        // The current CreateForward implementation uses `claims.UserId`.
-        // If I am Admin, `claims.UserId` is Admin's ID.
-        // This is a problem! The backend Refactoring plan said:
-        // "Enable administrators to manage user's port forwarding"
-        // I need to update `CreateForward` to allow passing `UserId` if Admin.
-        // But I didn't verify that part in Backend yet!
-        // Wait, let's check Backend `CreateForward` DTO again.
-      }
-
-      // Temporary: Assuming the backend handles it or I haven't fixed it yet. 
-      // I need to fix Backend to support creating forward for specific user!
-      // In `forward_dto.go`, `ForwardDto` does NOT have `UserId`.
-      // I should have added `UserId` to `ForwardDto` or `CreateForward` logic.
-
-      // Let's assume I will fix backend. I'll send `userId` in the payload just in case.
-      // But `ForwardDto` needs to have `UserId` field.
-
-      // For now, I'll write the frontend code assuming I'll fix the backend.
-
-      let res;
-      if (data.id) {
-        res = await updateForward(data);
-      } else {
-
-        data.userId = currentUser.id;
-        res = await createForward(data);
-      }
-
-      if (res.code === 0) {
-        toast.success(data.id ? '更新成功' : '创建成功');
-        setForwardViewMode('list');
-        loadUserForwards(currentUser.id);
-      } else {
-        toast.error(res.msg || '操作失败');
-      }
-    } catch (error) {
-      toast.error('操作失败');
-    } finally {
-      setForwardSubmitLoading(false);
-    }
   };
 
   // 过滤数据
@@ -1407,204 +1232,29 @@ export default function UserPage() {
       <Modal
         isOpen={isForwardModalOpen}
         onClose={onForwardModalClose}
-        size="4xl"
-        scrollBehavior="outside"
+        size="5xl"
+        scrollBehavior="inside"
         backdrop="blur"
         placement="center"
         isDismissable={false}
         classNames={{
-          base: "max-w-[95vw] sm:max-w-5xl"
+          base: "h-[90vh] max-w-[95vw] sm:max-w-[1400px]"
         }}
       >
         <ModalContent>
-          <ModalHeader className="flex justify-between items-center">
-            <span>用户 {currentUser?.user} 的转发管理</span>
-            {forwardViewMode === 'list' && (
-              <Button
-                size="sm"
-                color="primary"
-                onPress={handleAddForward}
-                startContent={
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M12 5v14M5 12h14" />
-                  </svg>
-                }
-              >
-                新增转发
-              </Button>
-            )}
-            {forwardViewMode === 'form' && (
-              <Button
-                size="sm"
-                variant="light"
-                onPress={() => setForwardViewMode('list')}
-              >
-                返回列表
-              </Button>
-            )}
-          </ModalHeader>
-          <ModalBody>
-            {forwardViewMode === 'list' ? (
-              <Table
-                aria-label="转发列表"
-                classNames={{
-                  wrapper: "shadow-none",
-                  th: "bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 font-medium"
-                }}
-              >
-                <TableHeader>
-                  <TableColumn>名称</TableColumn>
-                  <TableColumn>隧道</TableColumn>
-                  <TableColumn>协议</TableColumn>
-                  <TableColumn>远程地址</TableColumn>
-                  <TableColumn>内网IP:端口</TableColumn>
-                  <TableColumn>网卡</TableColumn>
-                  <TableColumn>流量统计</TableColumn>
-                  <TableColumn>状态</TableColumn>
-                  <TableColumn>操作</TableColumn>
-                </TableHeader>
-                <TableBody
-                  items={currentForwards}
-                  isLoading={forwardLoading}
-                  loadingContent={<Spinner />}
-                  emptyContent="暂无转发规则"
-                >
-                  {(forward) => (
-                    <TableRow key={forward.id}>
-                      <TableCell>{forward.name}</TableCell>
-                      <TableCell>{forward.tunnelName}</TableCell>
-                      <TableCell>{forward.strategy}</TableCell>
-                      <TableCell>{forward.remoteAddr}</TableCell>
-                      <TableCell>{forward.inIp}:{forward.inPort}</TableCell>
-                      <TableCell>{forward.interfaceName || '-'}</TableCell>
-                      <TableCell>
-                        <div className="flex flex-col gap-1 text-xs">
-                          <div>入: {formatFlow(forward.inFlow)}</div>
-                          <div>出: {formatFlow(forward.outFlow)}</div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Chip
-                          color={forward.status === 1 ? 'success' : 'danger'}
-                          size="sm"
-                          variant="flat"
-                        >
-                          {forward.status === 1 ? '正常' : '禁用'}
-                        </Chip>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            variant="flat"
-                            color="primary"
-                            isIconOnly
-                            onClick={() => handleEditForward(forward)}
-                          >
-                            <EditIcon className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="flat"
-                            color="danger"
-                            isIconOnly
-                            onClick={() => handleDeleteForward(forward.id)}
-                          >
-                            <DeleteIcon className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            ) : (
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Input
-                    label="名称"
-                    value={forwardForm.name}
-                    onChange={(e) => setForwardForm(prev => ({ ...prev, name: e.target.value }))}
-                    isRequired
-                    variant="bordered"
-                  />
-                  <Select
-                    label="选择隧道"
-                    selectedKeys={forwardForm.tunnelId ? [forwardForm.tunnelId.toString()] : []}
-                    onSelectionChange={(keys) => {
-                      const value = Array.from(keys)[0] as string;
-                      setForwardForm(prev => ({ ...prev, tunnelId: Number(value) }))
-                    }}
-                    isRequired
-                    variant="bordered"
-                  >
-                    {userTunnels.map((t) => (
-                      <SelectItem key={t.tunnelId.toString()} textValue={t.tunnelName || ''}>
-                        {t.tunnelName}
-                      </SelectItem>
-                    ))}
-                  </Select>
-
-                  <div className="col-span-1 md:col-span-2">
-                    <Textarea
-                      label="远程地址"
-                      placeholder="请输入远程地址，多个地址用换行分隔&#10;例如:&#10;192.168.1.100:8080&#10;example.com:3000"
-                      value={forwardForm.remoteAddr}
-                      onChange={(e) => setForwardForm(prev => ({ ...prev, remoteAddr: e.target.value }))}
-                      variant="bordered"
-                      description="格式: IP:端口 或 域名:端口，支持多个地址（每行一个）"
-                      minRows={3}
-                      maxRows={6}
-                      isRequired
-                    />
-                  </div>
-
-                  <Input
-                    label="内网端口 (选填，留空随机)"
-                    type="number"
-                    value={forwardForm.inPort?.toString() || ''}
-                    onChange={(e) => setForwardForm(prev => ({ ...prev, inPort: e.target.value ? Number(e.target.value) : null }))}
-                    variant="bordered"
-                  />
-
-                  {(forwardForm.remoteAddr.split('\n').filter(l => l.trim()).length > 1) && (
-                    <Select
-                      label="负载策略"
-                      placeholder="请选择负载均衡策略"
-                      selectedKeys={[forwardForm.strategy]}
-                      onSelectionChange={(keys) => {
-                        const value = Array.from(keys)[0] as string;
-                        setForwardForm(prev => ({ ...prev, strategy: value }))
-                      }}
-                      variant="bordered"
-                      description="多个目标地址的负载均衡策略"
-                    >
-                      <SelectItem key="fifo" textValue="主备模式">主备模式 - 自上而下</SelectItem>
-                      <SelectItem key="round" textValue="轮询模式">轮询模式 - 依次轮换</SelectItem>
-                      <SelectItem key="rand" textValue="随机模式">随机模式 - 随机选择</SelectItem>
-                      <SelectItem key="hash" textValue="哈希模式">哈希模式 - IP哈希</SelectItem>
-                    </Select>
-                  )}
-
-                  <Input
-                    label="绑定网卡 (选填)"
-                    value={forwardForm.interfaceName || ''}
-                    onChange={(e) => setForwardForm(prev => ({ ...prev, interfaceName: e.target.value }))}
-                    variant="bordered"
-                    description="用于多IP服务器指定出口IP"
-                  />
-                </div>
-              </div>
-            )}
-          </ModalBody>
-          <ModalFooter>
-            <Button onPress={onForwardModalClose}>关闭</Button>
-            {forwardViewMode === 'form' && (
-              <Button color="primary" onPress={handleSubmitForward} isLoading={forwardSubmitLoading}>
-                保存
-              </Button>
-            )}
-          </ModalFooter>
+          {(onClose) => (
+            <>
+              <ModalHeader className="flex justify-between items-center border-b border-divider">
+                <span>用户 {currentUser?.user} 的转发管理</span>
+              </ModalHeader>
+              <ModalBody className="p-0 bg-content2/50">
+                {currentUser && <ForwardList userId={currentUser.id} />}
+              </ModalBody>
+              <ModalFooter className="border-t border-divider">
+                <Button onPress={onClose}>关闭</Button>
+              </ModalFooter>
+            </>
+          )}
         </ModalContent>
       </Modal>
 

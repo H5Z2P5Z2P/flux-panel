@@ -20,15 +20,16 @@ func (s *StatisticsFlowService) StartScheduledTask() {
 	// For simplicity, I'll use a goroutine with ticker aligned to next hour.
 
 	go func() {
-		// Align to next hour
+		// Align to next 5 minutes
 		now := time.Now()
-		nextHour := now.Truncate(time.Hour).Add(time.Hour)
-		time.Sleep(time.Until(nextHour))
+		duration := 5 * time.Minute
+		nextInterval := now.Truncate(duration).Add(duration)
+		time.Sleep(time.Until(nextInterval))
 
 		// Run immediately
 		s.RunStatistics()
 
-		ticker := time.NewTicker(1 * time.Hour)
+		ticker := time.NewTicker(duration)
 		for range ticker.C {
 			s.RunStatistics()
 		}
