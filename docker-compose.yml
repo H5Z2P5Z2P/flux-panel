@@ -12,11 +12,12 @@ services:
       - DB_TYPE=sqlite
       - DB_NAME=/app/data/flux.db
       - TZ=Asia/Shanghai
+      - JWT_SECRET=your-secret-key
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
     ports:
-      - "127.0.0.1:6365:6365"
+      - "6365:6365"
     networks:
       - flux-network
 
@@ -28,7 +29,7 @@ services:
     container_name: flux-panel-frontend
     restart: always
     ports:
-      - "127.0.0.1:8080:80"
+      - "8080:80"
     depends_on:
       - backend
     networks:
