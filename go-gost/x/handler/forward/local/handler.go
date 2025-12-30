@@ -218,6 +218,12 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 	}
 	defer cc.Close()
 
+	if v := ctx.Value("stats"); v != nil {
+		if st, ok := v.(stats.Stats); ok {
+			cc = stats_wrapper.WrapConnWithKind(cc, st, xstats.KindDialOutputBytes, xstats.KindDialInputBytes)
+		}
+	}
+
 	xnet.Transport(conn, cc)
 
 	return nil

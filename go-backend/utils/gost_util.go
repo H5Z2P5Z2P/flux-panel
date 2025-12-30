@@ -173,7 +173,7 @@ func createServiceConfig(name string, inPort int, limiter *int, remoteAddr, prot
 			"selector": map[string]interface{}{
 				"strategy":    strategyStr(strategy),
 				"maxFails":    1,
-				"failTimeout": "600s",
+				"failTimeout": "20s",
 			},
 		}
 		service["forwarder"] = forwarder
@@ -201,7 +201,7 @@ func createRemoteServiceConfig(name string, outPort int, remoteAddr, protocol, s
 		"selector": map[string]interface{}{
 			"strategy":    strategyStr(strategy),
 			"maxFails":    1,
-			"failTimeout": "600s",
+			"failTimeout": "20s",
 		},
 	}
 	data["forwarder"] = forwarder

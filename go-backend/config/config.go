@@ -40,6 +40,10 @@ func InitConfig() {
 	viper.BindEnv("database.user", "DB_USER")
 	viper.BindEnv("database.password", "DB_PASSWORD")
 
+	viper.BindEnv("server.port", "SERVER_PORT")
+	viper.BindEnv("jwt-secret", "JWT_SECRET")
+	viper.BindEnv("log-dir", "LOG_DIR")
+
 	viper.SetDefault("database.host", "127.0.0.1")
 	viper.SetDefault("database.port", 3306)
 	viper.SetDefault("database.name", "flux_panel")

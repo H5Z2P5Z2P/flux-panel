@@ -46,7 +46,7 @@ func SetHTTPReportURL(addr string, secret string) {
 
 // sendTrafficReport 发送流量报告到HTTP接口
 func sendTrafficReport(ctx context.Context, reportItems TrafficReportItem) (bool, error) {
-	fmt.Printf("📊 上报流量数据: %+v\n", reportItems)
+	// fmt.Printf("📊 上报流量数据: %+v\n", reportItems)
 	jsonData, err := json.Marshal(reportItems)
 	if err != nil {
 		return false, fmt.Errorf("序列化报告数据失败: %v", err)
