@@ -19,12 +19,22 @@ var (
 
 type conn struct {
 	net.Conn
-	stats  stats.Stats
-	closed chan struct{}
-	mu     sync.Mutex
+	stats      stats.Stats
+	inputKind  stats.Kind
+	outputKind stats.Kind
+	closed     chan struct{}
+	mu         sync.Mutex
+}
+
+func (c *conn) Stats() stats.Stats {
+	return c.stats
 }
 
 func WrapConn(c net.Conn, pStats stats.Stats) net.Conn {
+	return WrapConnWithKind(c, pStats, stats.KindInputBytes, stats.KindOutputBytes)
+}
+
+func WrapConnWithKind(c net.Conn, pStats stats.Stats, inputKind, outputKind stats.Kind) net.Conn {
 	if c == nil || pStats == nil {
 		return c
 	}
@@ -33,21 +43,23 @@ func WrapConn(c net.Conn, pStats stats.Stats) net.Conn {
 	pStats.Add(stats.KindCurrentConns, 1)
 
 	return &conn{
-		Conn:   c,
-		stats:  pStats,
-		closed: make(chan struct{}),
+		Conn:       c,
+		stats:      pStats,
+		inputKind:  inputKind,
+		outputKind: outputKind,
+		closed:     make(chan struct{}),
 	}
 }
 
 func (c *conn) Read(b []byte) (n int, err error) {
 	n, err = c.Conn.Read(b)
-	c.stats.Add(stats.KindInputBytes, int64(n))
+	c.stats.Add(c.inputKind, int64(n))
 	return
 }
 
 func (c *conn) Write(b []byte) (n int, err error) {
 	n, err = c.Conn.Write(b)
-	c.stats.Add(stats.KindOutputBytes, int64(n))
+	c.stats.Add(c.outputKind, int64(n))
 	return
 }
 

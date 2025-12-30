@@ -54,10 +54,10 @@ var needWrap = false
 
 // SetProtocolBlock sets protocol blocking switches and recomputes wrapper need
 func SetProtocolBlock(httpOn int, tlsOn int, socksOn int) {
-    isHttp = httpOn
-    isTls = tlsOn
-    isSocks = socksOn
-    needWrap = isTls+isSocks+isHttp > 0
+	isHttp = httpOn
+	isTls = tlsOn
+	isSocks = socksOn
+	needWrap = isTls+isSocks+isHttp > 0
 }
 
 type Option func(opts *options)
@@ -243,6 +243,9 @@ func (s *defaultService) Serve() error {
 		ctx := ctxvalue.ContextWithSid(ctx, ctxvalue.Sid(sid))
 		ctx = ctxvalue.ContextWithClientAddr(ctx, ctxvalue.ClientAddr(clientAddr))
 		ctx = ctxvalue.ContextWithHash(ctx, &ctxvalue.Hash{Source: clientIP})
+		if s.status.stats != nil {
+			ctx = context.WithValue(ctx, "stats", s.status.stats)
+		}
 
 		log := s.options.logger.WithFields(map[string]any{
 			"sid": sid,
@@ -391,6 +394,8 @@ func (s *defaultService) observeStats(ctx context.Context) {
 			if isUpdated {
 				inputBytes := st.Get(stats.KindInputBytes)
 				outputBytes := st.Get(stats.KindOutputBytes)
+				dialInputBytes := st.Get(xstats.KindDialInputBytes)
+				dialOutputBytes := st.Get(xstats.KindDialOutputBytes)
 
 				evs := []observer.Event{
 					xstats.StatsEvent{
@@ -403,18 +408,26 @@ func (s *defaultService) observeStats(ctx context.Context) {
 						TotalErrs:    st.Get(stats.KindTotalErrs),
 					},
 				}
-				if outputBytes > 0 || inputBytes > 0 {
+				if outputBytes > 0 || inputBytes > 0 || dialInputBytes > 0 || dialOutputBytes > 0 {
 					reportItems := TrafficReportItem{
-						N: s.name,
-						U: int64(outputBytes),
-						D: int64(inputBytes),
+						N:   s.name,
+						U:   int64(inputBytes),
+						D:   int64(outputBytes),
+						DU:  int64(dialInputBytes),
+						DD:  int64(dialOutputBytes),
+						Ver: 1,
 					}
 					success, err := sendTrafficReport(ctx, reportItems)
 					if err != nil {
 						fmt.Printf("发送流量报告失败: %v", err)
 					} else if success {
-						if xstats, ok := st.(*xstats.Stats); ok {
-							xstats.ResetTraffic(st.Get(stats.KindInputBytes)-inputBytes, st.Get(stats.KindOutputBytes)-outputBytes)
+						if xs, ok := st.(*xstats.Stats); ok {
+							xs.ResetTraffic(
+								st.Get(stats.KindInputBytes)-inputBytes,
+								st.Get(stats.KindOutputBytes)-outputBytes,
+								st.Get(xstats.KindDialInputBytes)-dialInputBytes,
+								st.Get(xstats.KindDialOutputBytes)-dialOutputBytes,
+							)
 						}
 					}
 				}

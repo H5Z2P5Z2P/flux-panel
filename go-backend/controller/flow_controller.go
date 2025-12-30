@@ -202,8 +202,22 @@ func processFlowData(flowData *dto.FlowDto) {
 	var tunnel model.Tunnel
 	global.DB.First(&tunnel, forward.TunnelId)
 
+	var rawIn, rawOut int64
+	if flowData.Ver >= 1 {
+		// 新版逻辑 (U=Upload, D=Download, +Dial)
+		// RawIn  = Client->Proxy (U) + Target->Proxy (DD)
+		// RawOut = Proxy->Client (D) + Proxy->Target (DU)
+		rawIn = flowData.U + flowData.DD
+		rawOut = flowData.D + flowData.DU
+	} else {
+		// 旧版逻辑 (兼容 U=Output, D=Input 的旧客户端)
+		// 旧版中: U 是 Output (Download), D 是 Input (Upload)
+		rawIn = flowData.D
+		rawOut = flowData.U
+	}
+
 	// 应用流量倍率和单双向计算
-	inFlow, outFlow := calculateFlow(flowData, &tunnel)
+	inFlow, outFlow := calculateFlow(rawIn, rawOut, &tunnel)
 
 	// 更新流量统计（并发安全）
 	updateForwardFlow(forwardId, inFlow, outFlow)
@@ -219,12 +233,21 @@ func processFlowData(flowData *dto.FlowDto) {
 }
 
 // calculateFlow 计算流量（考虑倍率和单双向）
-func calculateFlow(flowData *dto.FlowDto, tunnel *model.Tunnel) (int64, int64) {
+func calculateFlow(rawIn, rawOut int64, tunnel *model.Tunnel) (inFlow, outFlow int64) {
 	ratio := float64(tunnel.TrafficRatio)
-	flowType := tunnel.Flow // 1=单向, 2=双向
+	flowType := tunnel.Flow // 1: 单向计算, 2: 双向计算
 
-	inFlow := int64(float64(flowData.D)*ratio) * int64(flowType)
-	outFlow := int64(float64(flowData.U)*ratio) * int64(flowType)
+	if flowType == 1 {
+		// 单向计算逻辑: 入站流量不计费, 出站流量计费
+		// 但根据用户要求: "单向逻辑就只统计 从服务器出去的流量" (D + DU) -> rawOut
+		// 所以 inFlow = 0, outFlow = int64(float64(rawOut) * ratio)
+		inFlow = 0
+		outFlow = int64(float64(rawOut) * ratio)
+	} else {
+		// 双向计算逻辑: 入站+出站
+		inFlow = int64(float64(rawIn) * ratio)
+		outFlow = int64(float64(rawOut) * ratio)
+	}
 
 	return inFlow, outFlow
 }

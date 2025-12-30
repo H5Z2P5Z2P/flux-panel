@@ -7,14 +7,21 @@ import (
 	"github.com/go-gost/core/observer/stats"
 )
 
+const (
+	KindDialInputBytes  stats.Kind = 1001
+	KindDialOutputBytes stats.Kind = 1002
+)
+
 type Stats struct {
-	updated      atomic.Bool
-	totalConns   atomic.Uint64
-	currentConns atomic.Uint64
-	inputBytes   atomic.Uint64
-	outputBytes  atomic.Uint64
-	totalErrs    atomic.Uint64
-	resetTraffic bool
+	updated         atomic.Bool
+	totalConns      atomic.Uint64
+	currentConns    atomic.Uint64
+	inputBytes      atomic.Uint64
+	outputBytes     atomic.Uint64
+	dialInputBytes  atomic.Uint64
+	dialOutputBytes atomic.Uint64
+	totalErrs       atomic.Uint64
+	resetTraffic    bool
 }
 
 func NewStats(resetTraffic bool) stats.Stats {
@@ -38,6 +45,10 @@ func (s *Stats) Add(kind stats.Kind, n int64) {
 		s.inputBytes.Add(uint64(n))
 	case stats.KindOutputBytes:
 		s.outputBytes.Add(uint64(n))
+	case KindDialInputBytes:
+		s.dialInputBytes.Add(uint64(n))
+	case KindDialOutputBytes:
+		s.dialOutputBytes.Add(uint64(n))
 	case stats.KindTotalErrs:
 		if n > 0 {
 			s.totalErrs.Add(uint64(n))
@@ -60,15 +71,21 @@ func (s *Stats) Get(kind stats.Kind) uint64 {
 		return s.inputBytes.Load() // 只获取，不自动清零
 	case stats.KindOutputBytes:
 		return s.outputBytes.Load() // 只获取，不自动清零
+	case KindDialInputBytes:
+		return s.dialInputBytes.Load()
+	case KindDialOutputBytes:
+		return s.dialOutputBytes.Load()
 	case stats.KindTotalErrs:
 		return s.totalErrs.Load()
 	}
 	return 0
 }
 
-func (s *Stats) ResetTraffic(reportedInputBytes, reportedOutputBytes uint64) {
+func (s *Stats) ResetTraffic(reportedInputBytes, reportedOutputBytes, reportedDialInput, reportedDialOutput uint64) {
 	s.inputBytes.Store(reportedInputBytes)
 	s.outputBytes.Store(reportedOutputBytes)
+	s.dialInputBytes.Store(reportedDialInput)
+	s.dialOutputBytes.Store(reportedDialOutput)
 }
 
 func (s *Stats) Reset() {
@@ -77,6 +94,8 @@ func (s *Stats) Reset() {
 	s.currentConns.Store(0)
 	s.inputBytes.Store(0)
 	s.outputBytes.Store(0)
+	s.dialInputBytes.Store(0)
+	s.dialOutputBytes.Store(0)
 	s.totalErrs.Store(0)
 }
 

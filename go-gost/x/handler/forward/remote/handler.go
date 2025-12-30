@@ -258,6 +258,12 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 
 	cc = proxyproto.WrapClientConn(h.md.proxyProtocol, conn.RemoteAddr(), convertAddr(conn.LocalAddr()), cc)
 
+	if v := ctx.Value("stats"); v != nil {
+		if st, ok := v.(stats.Stats); ok {
+			cc = stats_wrapper.WrapConnWithKind(cc, st, xstats.KindDialOutputBytes, xstats.KindDialInputBytes)
+		}
+	}
+
 	t := time.Now()
 	log.Infof("%s <-> %s", conn.RemoteAddr(), target.Addr)
 	xnet.Transport(conn, cc)
