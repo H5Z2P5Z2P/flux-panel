@@ -126,26 +126,17 @@ export default function GuestDashboardPage() {
         return value.toString();
     };
 
+    // 处理流量统计数据（5分钟粒度）
     const processFlowChartData = () => {
-        if (!statisticsFlows) return [];
-
-        const now = new Date();
-        const hours: string[] = [];
-        for (let i = 23; i >= 0; i--) {
-            const time = new Date(now.getTime() - i * 60 * 60 * 1000);
-            const hourString = time.getHours().toString().padStart(2, '0') + ':00';
-            hours.push(hourString);
+        if (!statisticsFlows || statisticsFlows.length === 0) {
+            return [];
         }
 
-        const flowMap = new Map<string, number>();
-        statisticsFlows.forEach(item => {
-            flowMap.set(item.time, item.flow || 0);
-        });
-
-        return hours.map(hour => ({
-            time: hour,
-            flow: flowMap.get(hour) || 0,
-            formattedFlow: formatFlow(flowMap.get(hour) || 0)
+        // 直接使用后端返回的数据，按时间顺序展示
+        return statisticsFlows.map(item => ({
+            time: item.time,
+            flow: item.flow || 0,
+            formattedFlow: formatFlow(item.flow || 0)
         }));
     };
 
@@ -534,6 +525,14 @@ export default function GuestDashboardPage() {
                                         tick={{ fontSize: 12 }}
                                         tickLine={false}
                                         axisLine={{ stroke: '#e5e7eb', strokeWidth: 1 }}
+                                        interval={11}
+                                        tickFormatter={(value: string) => {
+                                            // 只显示整点时间 (HH:00)
+                                            if (value && value.endsWith(':00')) {
+                                                return value;
+                                            }
+                                            return '';
+                                        }}
                                     />
                                     <YAxis
                                         tick={{ fontSize: 12 }}

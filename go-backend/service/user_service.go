@@ -445,16 +445,20 @@ func (s *UserService) GetForwardDetails(userId int64) []dto.UserForwardDetailDto
 	return resultList
 }
 
+// GetLast24HoursFlowStatistics 获取过去 24 小时的流量统计（5 分钟粒度，共 288 条）
 func (s *UserService) GetLast24HoursFlowStatistics(userId int64) []dto.StatisticsFlowDto {
+	// 5 分钟粒度：24 小时 = 288 条记录
+	const maxRecords = 288
+
 	var flows []model.StatisticsFlow
-	global.DB.Where("user_id = ?", userId).Order("id desc").Limit(24).Find(&flows)
+	global.DB.Where("user_id = ?", userId).Order("id desc").Limit(maxRecords).Find(&flows)
 
 	// reverse to chronological order
 	for i, j := 0, len(flows)-1; i < j; i, j = i+1, j-1 {
 		flows[i], flows[j] = flows[j], flows[i]
 	}
 
-	resultList := make([]dto.StatisticsFlowDto, 0, 24)
+	resultList := make([]dto.StatisticsFlowDto, 0, maxRecords)
 	for _, f := range flows {
 		id := f.ID
 		createdTime := f.CreatedTime
@@ -468,31 +472,32 @@ func (s *UserService) GetLast24HoursFlowStatistics(userId int64) []dto.Statistic
 		})
 	}
 
-	if len(resultList) >= 24 {
+	if len(resultList) >= maxRecords {
 		return resultList
 	}
 
-	var startHour int
+	// 补填空记录使用 5 分钟粒度
+	now := time.Now()
+	var startTime time.Time
 	if len(flows) > 0 {
-		startHour = parseHour(flows[len(flows)-1].Time) - 1
+		// 从最后一条记录的时间往前推
+		startTime = parseTime5Min(flows[len(flows)-1].Time, now).Add(-5 * time.Minute)
 	} else {
-		startHour = time.Now().Hour()
+		// 从当前时间开始
+		startTime = now.Truncate(5 * time.Minute)
 	}
 
 	// Pad with empty records (id=null, createdTime=null)
-	for len(resultList) < 24 {
-		if startHour < 0 {
-			startHour = 23
-		}
+	for len(resultList) < maxRecords {
 		resultList = append(resultList, dto.StatisticsFlowDto{
 			ID:          nil,
 			UserId:      userId,
 			Flow:        0,
 			TotalFlow:   0,
-			Time:        fmt.Sprintf("%02d:00", startHour),
+			Time:        startTime.Format("15:04"),
 			CreatedTime: nil,
 		})
-		startHour--
+		startTime = startTime.Add(-5 * time.Minute)
 	}
 
 	return resultList
@@ -511,6 +516,20 @@ func parseHour(timeStr string) int {
 		return time.Now().Hour()
 	}
 	return hour
+}
+
+// parseTime5Min 解析 HH:mm 格式时间字符串，返回今天对应时刻的 time.Time
+func parseTime5Min(timeStr string, now time.Time) time.Time {
+	parts := strings.Split(timeStr, ":")
+	if len(parts) != 2 {
+		return now.Truncate(5 * time.Minute)
+	}
+	hour, err1 := strconv.Atoi(parts[0])
+	minute, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return now.Truncate(5 * time.Minute)
+	}
+	return time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
 }
 
 func (s *UserService) deleteUserRelatedData(user *model.User) error {

@@ -112,6 +112,8 @@ export default function UserPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState('');
+  // 预加载的游客链接 token，key 为用户 ID
+  const [guestTokens, setGuestTokens] = useState<Record<number, string>>({});
   const [pagination, setPagination] = useState<PaginationType>({
     current: 1,
     size: 10,
@@ -191,8 +193,10 @@ export default function UserPage() {
       });
 
       if (response.code === 0) {
-        const data = response.data || {};
-        setUsers(data || []);
+        const data = response.data || [];
+        setUsers(data);
+        // 预加载所有用户的 guest token
+        preloadGuestTokens(data);
       } else {
         toast.error(response.msg || '获取用户列表失败');
       }
@@ -503,20 +507,35 @@ export default function UserPage() {
     }
   };
 
-  const handleShare = async (user: User) => {
-    try {
-      const response = await getGuestLink(user.id);
-      if (response.code === 0 && response.data) {
-        const link = `${window.location.origin}/guest/dashboard?token=${response.data.token}`;
-        await copyToClipboard(link);
-        toast.success("链接已复制到剪贴板");
-      } else {
-        toast.error("获取链接失败: " + response.msg);
-      }
-    } catch (e: any) {
-      console.error(e);
-      toast.error("操作失败: " + (e.message || "未知错误"));
+  // 预加载 guest tokens
+  const preloadGuestTokens = async (userList: User[]) => {
+    const tokens: Record<number, string> = {};
+    await Promise.all(
+      userList.map(async (user) => {
+        try {
+          const response = await getGuestLink(user.id);
+          if (response.code === 0 && response.data) {
+            tokens[user.id] = response.data.token;
+          }
+        } catch {
+          // 忽略单个用户的预加载失败
+        }
+      })
+    );
+    setGuestTokens(tokens);
+  };
+
+  // 同步复制游客链接（使用预加载的 token）
+  const handleShare = (user: User) => {
+    const token = guestTokens[user.id];
+    if (!token) {
+      toast.error("链接正在加载中，请稍后再试");
+      return;
     }
+    const link = `${window.location.origin}/guest/dashboard?token=${token}`;
+    copyToClipboard(link)
+      .then(() => toast.success("链接已复制到剪贴板"))
+      .catch(() => toast.error("复制失败"));
   };
 
   const availableSpeedLimits = speedLimits.filter(
