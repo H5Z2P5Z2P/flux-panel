@@ -727,7 +727,7 @@ export default function DashboardPage() {
                     <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                     <XAxis
                       dataKey="time"
-                      tick={{ fontSize: 12 }}
+                      tick={{ fontSize: 10 }}
                       tickLine={false}
                       axisLine={{ stroke: '#e5e7eb', strokeWidth: 1 }}
                       interval={11}
