@@ -1295,16 +1295,6 @@ export default function ForwardList({ userId }: ForwardListProps) {
                                 </div>
                             </div>
 
-                            {forward.outPort && forward.outPort > 0 && (
-                                <div className="px-2 py-1 bg-default-50 dark:bg-default-100/50 rounded border border-default-200 dark:border-default-300">
-                                    <div className="flex items-center gap-1.5 min-w-0">
-                                        <span className="text-xs font-medium text-default-600 flex-shrink-0">出口:</span>
-                                        <code className="text-xs font-mono text-foreground truncate min-w-0">
-                                            {forward.outPort}
-                                        </code>
-                                    </div>
-                                </div>
-                            )}
 
                             <div
                                 className={`cursor-pointer px-2 py-1 bg-default-50 dark:bg-default-100/50 rounded border border-default-200 dark:border-default-300 transition-colors duration-200 ${hasMultipleAddresses(forward.remoteAddr) ? 'hover:bg-default-100 dark:hover:bg-default-200/50' : ''
@@ -1677,22 +1667,7 @@ export default function ForwardList({ userId }: ForwardListProps) {
                                         }
                                     />
 
-                                    {selectedTunnel && selectedTunnel.type === 2 && (
-                                        <Input
-                                            label="出口端口"
-                                            placeholder="留空自动分配"
-                                            type="number"
-                                            value={form.outPort?.toString() || ''}
-                                            onChange={(e) => setForm(prev => ({
-                                                ...prev,
-                                                outPort: e.target.value ? parseInt(e.target.value) : null
-                                            }))}
-                                            isInvalid={!!errors.outPort}
-                                            errorMessage={errors.outPort}
-                                            variant="bordered"
-                                            description="仅隧道转发模式下有效，留空将自动分配"
-                                        />
-                                    )}
+
 
                                     <Textarea
                                         label="远程地址"
