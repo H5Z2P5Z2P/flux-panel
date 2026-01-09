@@ -330,9 +330,9 @@ func (s *TunnelService) PerformTcpPing(node *model.Node, targetIp string, port i
 }
 
 func (s *TunnelService) getOutNodeTcpPort(tunnelId int64) int {
-	var forward model.Forward
-	if err := global.DB.Where("tunnel_id = ? AND status = 1", tunnelId).First(&forward).Error; err == nil {
-		return forward.OutPort
+	var tunnel model.Tunnel
+	if err := global.DB.First(&tunnel, tunnelId).Error; err == nil && tunnel.ChainPort != 0 {
+		return tunnel.ChainPort
 	}
 	return 22 // Default SSH
 }

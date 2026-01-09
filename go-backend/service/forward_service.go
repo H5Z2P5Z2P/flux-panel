@@ -110,11 +110,7 @@ func (s *ForwardService) CreateForward(dto dto.ForwardDto, ctxUser *utils.UserCl
 	}
 
 	// 3. Allocate Port
-	var specifiedOutPort *int
-	if dto.OutPort != 0 {
-		specifiedOutPort = &dto.OutPort
-	}
-	portAlloc, err := s.allocatePorts(&tunnel, dto.InPort, specifiedOutPort, nil)
+	portAlloc, err := s.allocatePorts(&tunnel, dto.InPort, nil)
 	if err != nil {
 		return result.Err(-1, err.Error())
 	}
@@ -131,7 +127,6 @@ func (s *ForwardService) CreateForward(dto dto.ForwardDto, ctxUser *utils.UserCl
 		Name:          dto.Name,
 		TunnelId:      dto.TunnelId,
 		InPort:        portAlloc.InPort,
-		OutPort:       portAlloc.OutPort, // For Tunnel Forward
 		RemoteAddr:    dto.RemoteAddr,
 		InterfaceName: dto.InterfaceName,
 		Strategy:      dto.Strategy,
@@ -203,43 +198,13 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 	var portAlloc *PortAllocResult
 	var err error
 
-	outPortChanged := dto.OutPort != 0 && forward.OutPort != dto.OutPort
-	if dto.OutPort == 0 && forward.OutPort != 0 {
-		// If user didn't specify (sent 0), keep existing unless tunnel changed type (which is handled by tunnelChanged logic partly)
-		// actually if tunnel changed, we re-allocate.
-	}
-
-	if tunnelChanged || (dto.InPort != nil && forward.InPort != *dto.InPort) || outPortChanged {
-		var specifiedOutPort *int
-		if dto.OutPort != 0 {
-			specifiedOutPort = &dto.OutPort
-		} else if !tunnelChanged {
-			// If not changing tunnel and not specifying new out port, keep old one?
-			// No, if only InPort changed, OutPort should stay same if not specified.
-			// But allocatePorts will verify availability.
-			// Let's passed the desired outport.
-			// If dto.OutPort is 0, we might want to keep existing if compatible?
-			// Simplest: if dto.OutPort is 0 and we are updating, check if we should keep existing.
-			// However, for update, usually we pass what we want. If 0, maybe auto-allocate?
-			// Let's assume frontend passes existing OutPort if not changed.
-			// If frontend passes 0, it means auto-allocate.
-		}
-
-		// If tunnel didn't change and outport didn't change (dto.OutPort matches forward.OutPort or is 0 and we keep forward.OutPort),
-		// we might not need to re-check outport if only InPort changed.
-		// But allocatePorts checks everything.
-
-		// Let's refine:
-		if dto.OutPort != 0 {
-			specifiedOutPort = &dto.OutPort
-		}
-
-		portAlloc, err = s.allocatePorts(&tunnel, dto.InPort, specifiedOutPort, &id)
+	if tunnelChanged || (dto.InPort != nil && forward.InPort != *dto.InPort) {
+		portAlloc, err = s.allocatePorts(&tunnel, dto.InPort, &id)
 		if err != nil {
 			return result.Err(-1, err.Error())
 		}
 	} else {
-		portAlloc = &PortAllocResult{InPort: forward.InPort, OutPort: forward.OutPort}
+		portAlloc = &PortAllocResult{InPort: forward.InPort}
 	}
 
 	// 检查端口自环（防止远端地址指向入口端口导致崩溃）
@@ -252,7 +217,6 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 	updatedForward.Name = dto.Name
 	updatedForward.TunnelId = dto.TunnelId
 	updatedForward.InPort = portAlloc.InPort
-	updatedForward.OutPort = portAlloc.OutPort
 	updatedForward.RemoteAddr = dto.RemoteAddr
 	updatedForward.InterfaceName = dto.InterfaceName
 	updatedForward.Strategy = dto.Strategy
@@ -305,7 +269,6 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 		"name":           updatedForward.Name,
 		"tunnel_id":      updatedForward.TunnelId,
 		"in_port":        updatedForward.InPort,
-		"out_port":       updatedForward.OutPort,
 		"remote_addr":    updatedForward.RemoteAddr,
 		"interface_name": updatedForward.InterfaceName,
 		"strategy":       updatedForward.Strategy,
@@ -382,7 +345,6 @@ func (s *ForwardService) GetAllForwards(ctxUser *utils.UserClaims) *result.Resul
 			Strategy:      f.Strategy,
 			Inx:           f.Inx,
 			InterfaceName: f.InterfaceName,
-			OutPort:       f.OutPort,
 		}
 		response = append(response, resDto)
 	}
@@ -503,11 +465,10 @@ func (s *ForwardService) deleteGostServices(forward *model.Forward, tunnel *mode
 // --- Helpers ---
 
 type PortAllocResult struct {
-	InPort  int
-	OutPort int
+	InPort int
 }
 
-func (s *ForwardService) allocatePorts(tunnel *model.Tunnel, specifiedInPort *int, specifiedOutPort *int, excludeForwardId *int64) (*PortAllocResult, error) {
+func (s *ForwardService) allocatePorts(tunnel *model.Tunnel, specifiedInPort *int, excludeForwardId *int64) (*PortAllocResult, error) {
 	// Allocate InPort
 	var inPort int
 	if specifiedInPort != nil {
@@ -523,28 +484,7 @@ func (s *ForwardService) allocatePorts(tunnel *model.Tunnel, specifiedInPort *in
 		inPort = p
 	}
 
-	// Allocate OutPort (for Tunnel Forward)
-	var outPort int
-	if tunnel.Type == 2 {
-		if specifiedOutPort != nil && *specifiedOutPort != 0 {
-			if err := s.checkPortAvailable(tunnel.OutNodeId, *specifiedOutPort, excludeForwardId); err != nil {
-				return nil, fmt.Errorf("出口端口不可用: %v", err)
-			}
-			outPort = *specifiedOutPort
-		} else {
-			// Tunnel Forward needs output node port
-			p, err := s.findFreePort(tunnel.OutNodeId, excludeForwardId)
-			if err != nil {
-				return nil, fmt.Errorf("出口节点无可用端口")
-			}
-			outPort = p
-		}
-	} else {
-		// Port Forward: OutPort same as InPort (or irrelevant)
-		outPort = inPort
-	}
-
-	return &PortAllocResult{InPort: inPort, OutPort: outPort}, nil
+	return &PortAllocResult{InPort: inPort}, nil
 }
 
 func (s *ForwardService) checkPortAvailable(nodeId int64, port int, excludeForwardId *int64) error {
@@ -592,21 +532,11 @@ func (s *ForwardService) getUsedPorts(nodeId int64, excludeForwardId *int64) map
 		}
 	}
 
-	// 2. OutTunnels -> Forwards (OutPort)
-	var outTunnels []int64
-	global.DB.Model(&model.Tunnel{}).Where("out_node_id = ?", nodeId).Pluck("id", &outTunnels)
-	if len(outTunnels) > 0 {
-		var forwards []model.Forward
-		query := global.DB.Where("tunnel_id IN ?", outTunnels)
-		if excludeForwardId != nil {
-			query = query.Where("id != ?", *excludeForwardId)
-		}
-		query.Find(&forwards)
-		for _, f := range forwards {
-			if f.OutPort != 0 {
-				used[f.OutPort] = true
-			}
-		}
+	// 2. Tunnels -> ChainPort (for tunnel forwards)
+	var tunnels []model.Tunnel
+	global.DB.Where("out_node_id = ? AND type = 2 AND chain_port != 0", nodeId).Find(&tunnels)
+	for _, t := range tunnels {
+		used[t.ChainPort] = true
 	}
 	return used
 }
@@ -892,8 +822,8 @@ func (s *ForwardService) DiagnoseForward(id int64, ctxUser *utils.UserClaims) *r
 		}
 	} else {
 		// Tunnel Forward: InNode -> OutNode, OutNode -> Targets
-		// In -> Out
-		resIn := Tunnel.PerformTcpPing(inNode, outNode.ServerIp, forward.OutPort, "入口->出口")
+		// In -> Out (using tunnel.ChainPort)
+		resIn := Tunnel.PerformTcpPing(inNode, outNode.ServerIp, tunnel.ChainPort, "入口->出口")
 		results = append(results, resIn)
 
 		// Out -> Targets

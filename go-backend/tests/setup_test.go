@@ -161,3 +161,17 @@ func CreateTestNode(id int64, name string) *model.Node {
 	global.DB.Create(&node)
 	return &node
 }
+
+// createNodeWithPorts 创建带端口范围的节点用于测试
+func createNodeWithPorts(name string, portSta, portEnd int) *model.Node {
+	node := model.Node{
+		Name:    name,
+		Status:  1,
+		Ip:      "127.0.0.1",
+		PortSta: portSta,
+		PortEnd: portEnd,
+	}
+	global.DB.Create(&node)
+	fmt.Printf("Created Node: ID=%d, Name=%s, Ports=%d-%d\n", node.ID, node.Name, portSta, portEnd)
+	return &node
+}

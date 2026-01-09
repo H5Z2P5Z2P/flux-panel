@@ -98,7 +98,7 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  (无参数)       启动 HTTP 服务")
-	fmt.Println("  migrate        迁移缺少 OutPort 的隧道转发记录")
+	fmt.Println("  migrate        迁移缺少 ChainPort 的隧道转发记录")
 	fmt.Println("    --sync, -s   同时同步 Gost 配置（离线节点跳过）")
 	fmt.Println("  migrate:check  检查是否需要迁移")
 	fmt.Println("  help           显示帮助信息")

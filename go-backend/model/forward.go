@@ -10,7 +10,6 @@ type Forward struct {
 	Name          string `json:"name"`
 	TunnelId      int64  `json:"tunnelId"`
 	InPort        int    `json:"inPort"`
-	OutPort       int    `json:"outPort"`
 	RemoteAddr    string `json:"remoteAddr"`
 	InterfaceName string `json:"interfaceName"`
 	Strategy      string `json:"strategy"`

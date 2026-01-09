@@ -7,7 +7,6 @@ type ForwardDto struct {
 	InPort        *int   `json:"inPort"`        // Optional
 	InterfaceName string `json:"interfaceName"` // Optional
 	Strategy      string `json:"strategy"`      // Optional
-	OutPort       int    `json:"outPort"`       // Optional: User specified
 	UserId        *int64 `json:"userId"`        // Optional: Admin only
 }
 
@@ -19,7 +18,6 @@ type ForwardUpdateDto struct {
 	InPort        *int   `json:"inPort"`
 	InterfaceName string `json:"interfaceName"`
 	Strategy      string `json:"strategy"`
-	OutPort       int    `json:"outPort"`
 }
 
 type ForwardResponseDto struct {
@@ -40,5 +38,4 @@ type ForwardResponseDto struct {
 	Strategy      string `json:"strategy"`
 	Inx           int    `json:"inx"`
 	InterfaceName string `json:"interfaceName"`
-	OutPort       int    `json:"outPort"`
 }
