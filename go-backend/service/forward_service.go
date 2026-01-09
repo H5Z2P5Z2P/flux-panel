@@ -115,6 +115,11 @@ func (s *ForwardService) CreateForward(dto dto.ForwardDto, ctxUser *utils.UserCl
 		return result.Err(-1, err.Error())
 	}
 
+	// 3.5 检查端口自环（防止远端地址指向入口端口导致崩溃）
+	if err := s.checkLoopbackAddress(dto.RemoteAddr, &tunnel, portAlloc.InPort); err != nil {
+		return result.Err(-1, err.Error())
+	}
+
 	// 4. Create Entity
 	forward := model.Forward{
 		UserId:        targetUserId,
@@ -169,9 +174,7 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 	// Check if Tunnel Changed
 	tunnelChanged := forward.TunnelId != dto.TunnelId
 
-	// Permissions for new tunnel if changed
-	var userTunnel *model.UserTunnel
-	var limiter *int
+	// 权限检查：普通用户需要验证自己是否有新隧道的权限
 	if ctxUser.RoleId != 0 {
 		var ut model.UserTunnel
 		if err := global.DB.Where("user_id = ? AND tunnel_id = ?", ctxUser.GetUserId(), dto.TunnelId).First(&ut).Error; err != nil {
@@ -180,9 +183,16 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 		if ut.Status != 1 {
 			return result.Err(-1, "隧道被禁用")
 		}
-		// Check ExpTime, Flow, etc.
-		userTunnel = &ut
-		limiter = &ut.SpeedId
+	}
+
+	// 获取转发所属用户的新隧道权限信息（用于 Gost 服务创建）
+	// 注意：这里使用 forward.UserId，确保管理员修改时也能正确获取目标用户的信息
+	var userTunnel *model.UserTunnel
+	var limiter *int
+	var newUT model.UserTunnel
+	if err := global.DB.Where("user_id = ? AND tunnel_id = ?", forward.UserId, dto.TunnelId).First(&newUT).Error; err == nil {
+		userTunnel = &newUT
+		limiter = &newUT.SpeedId
 	}
 
 	// Update Port Allocation if needed
@@ -197,6 +207,11 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 		portAlloc = &PortAllocResult{InPort: forward.InPort, OutPort: forward.OutPort}
 	}
 
+	// 检查端口自环（防止远端地址指向入口端口导致崩溃）
+	if err := s.checkLoopbackAddress(dto.RemoteAddr, &tunnel, portAlloc.InPort); err != nil {
+		return result.Err(-1, err.Error())
+	}
+
 	// Update Entity Wrapper (Pre-save for Gost)
 	updatedForward := forward
 	updatedForward.Name = dto.Name
@@ -209,18 +224,38 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 	updatedForward.UpdatedTime = time.Now().UnixMilli()
 	updatedForward.Status = 1
 
-	// Gost Sync
+	// Gost Sync - 根据入口节点是否相同采用不同策略
 	if tunnelChanged {
-		// Delete Old
+		// 获取旧隧道信息
 		var oldTunnel model.Tunnel
 		global.DB.First(&oldTunnel, forward.TunnelId)
 		var oldUT model.UserTunnel
 		global.DB.Where("user_id = ? AND tunnel_id = ?", forward.UserId, oldTunnel.ID).First(&oldUT)
-		s.deleteGostServices(&forward, &oldTunnel, &oldUT)
 
-		// Create New
-		if err := s.createGostServices(&updatedForward, &tunnel, limiter, userTunnel); err != nil {
-			return result.Err(-1, "Gost服务更新失败: "+err.Error())
+		if oldTunnel.InNodeId == tunnel.InNodeId {
+			// 入口节点相同：必须先删后创（否则监听同一端口会冲突）
+			// 风险：如果新服务创建失败，需要尝试恢复旧服务
+			s.deleteGostServices(&forward, &oldTunnel, &oldUT)
+
+			if err := s.createGostServices(&updatedForward, &tunnel, limiter, userTunnel); err != nil {
+				// 创建失败，尝试恢复旧服务
+				var oldLimiter *int
+				if oldUT.ID != 0 {
+					oldLimiter = &oldUT.SpeedId
+				}
+				restoreErr := s.createGostServices(&forward, &oldTunnel, oldLimiter, &oldUT)
+				if restoreErr != nil {
+					return result.Err(-1, "新服务创建失败且无法恢复旧服务: "+err.Error()+"; 恢复错误: "+restoreErr.Error())
+				}
+				return result.Err(-1, "新服务创建失败(已恢复旧服务): "+err.Error())
+			}
+		} else {
+			// 入口节点不同：先创后删（确保修改失败时旧服务仍可用）
+			if err := s.createGostServices(&updatedForward, &tunnel, limiter, userTunnel); err != nil {
+				return result.Err(-1, "新隧道服务创建失败: "+err.Error())
+			}
+			// 新服务创建成功后，删除旧服务（删除失败不致命）
+			s.deleteGostServices(&forward, &oldTunnel, &oldUT)
 		}
 	} else {
 		// Update Same Tunnel
@@ -269,7 +304,7 @@ func (s *ForwardService) DeleteForward(id int64, ctxUser *utils.UserClaims) *res
 
 	// Delete Gost Service
 	if err := s.deleteGostServices(&forward, &tunnel, &userTunnel); err != nil {
-		return result.Err(-1, "Gost服务删除失败: "+err.Error())
+		eturn result.Err(-1, "Gost服务删除失败: "+err.Error())
 	}
 
 	global.DB.Delete(&forward)
@@ -558,6 +593,30 @@ func (s *ForwardService) buildServiceName(forwardId int64, userId int64, userTun
 	return fmt.Sprintf("%d_%d_%d", forwardId, userId, utId)
 }
 
+// checkLoopbackAddress 检查远端地址是否会导致自环
+// 如果远端地址指向入口节点的入口端口，会导致服务器崩溃
+// 注意：tunnel.InIp 可能是逗号分隔的多个IP地址
+func (s *ForwardService) checkLoopbackAddress(remoteAddr string, tunnel *model.Tunnel, inPort int) error {
+	// 解析入口节点所有IP
+	inIps := make(map[string]bool)
+	for _, ip := range strings.Split(tunnel.InIp, ",") {
+		inIps[strings.TrimSpace(ip)] = true
+	}
+
+	// 检查每个远端地址
+	addrs := strings.Split(remoteAddr, ",")
+	for _, addr := range addrs {
+		ip := utils.ExtractIp(strings.TrimSpace(addr))
+		port := utils.ExtractPort(strings.TrimSpace(addr))
+
+		// 检查是否指向入口节点的入口端口
+		if inIps[ip] && port == inPort {
+			return fmt.Errorf("远端地址不能指向入口节点的监听端口(%s:%d)，会导致自环", ip, port)
+		}
+	}
+	return nil
+}
+
 // Keep the Stub method for TunnelService
 // Stub kept for compatibility
 func (s *ForwardService) CountForwardsByTunnelId(tunnelId int64) int64 {
@@ -640,6 +699,8 @@ func (s *ForwardService) PauseForward(id int64, ctxUser *utils.UserClaims) *resu
 	// 如果是隧道转发，暂停远程服务
 	if tunnel.Type == 2 {
 		if res := utils.PauseRemoteService(tunnel.OutNodeId, serviceName); res.Msg != "OK" {
+			// 回滚：恢复已暂停的入口服务
+			utils.ResumeService(tunnel.InNodeId, serviceName)
 			return result.Err(-1, "暂停远程服务失败: "+res.Msg)
 		}
 	}
@@ -718,6 +779,8 @@ func (s *ForwardService) ResumeForward(id int64, ctxUser *utils.UserClaims) *res
 	// 如果是隧道转发，恢复远程服务
 	if tunnel.Type == 2 {
 		if res := utils.ResumeRemoteService(tunnel.OutNodeId, serviceName); res.Msg != "OK" {
+			// 回滚：暂停已恢复的入口服务
+			utils.PauseService(tunnel.InNodeId, serviceName)
 			return result.Err(-1, "恢复远程服务失败: "+res.Msg)
 		}
 	}
