@@ -20,40 +20,64 @@ const (
 	TestDBPath   = "./flux_test.db"
 )
 
-// SetupTestDB initializes the test DB by copying the real DB
+// SetupTestDB initializes the test DB by copying the real DB or using in-memory DB
 func SetupTestDB() {
-	// 1. Copy real DB to test DB
-	sourceFile, err := os.Open(SourceDBPath)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to open source DB at %s: %v", SourceDBPath, err))
+
+	// Check if source DB exists
+	if _, err := os.Stat(SourceDBPath); os.IsNotExist(err) {
+		// Use in-memory SQLite database
+		fmt.Println("⚠️ Source DB not found, using in-memory database")
+		global.DB, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+		if err != nil {
+			panic(fmt.Sprintf("Failed to create in-memory DB: %v", err))
+		}
+
+		// Auto migrate tables
+		global.DB.AutoMigrate(
+			&model.User{},
+			&model.Node{},
+			&model.Tunnel{},
+			&model.Forward{},
+			&model.UserTunnel{},
+			&model.SpeedLimit{},
+			&model.ViteConfig{},
+			&model.StatisticsFlow{},
+		)
+		fmt.Println("✅ In-memory Test DB Initialized with schema")
+	} else {
+		// 1. Copy real DB to test DB
+		sourceFile, err := os.Open(SourceDBPath)
+		if err != nil {
+			panic(fmt.Sprintf("Failed to open source DB at %s: %v", SourceDBPath, err))
+		}
+		defer sourceFile.Close()
+
+		destFile, err := os.Create(TestDBPath)
+		if err != nil {
+			panic(fmt.Sprintf("Failed to create test DB at %s: %v", TestDBPath, err))
+		}
+		defer destFile.Close()
+
+		_, err = io.Copy(destFile, sourceFile)
+		if err != nil {
+			panic(fmt.Sprintf("Failed to copy DB: %v", err))
+		}
+
+		// 2. Configure App to use the test DB
+		absPath, _ := filepath.Abs(TestDBPath)
+		config.AppConfig.Database.Type = "sqlite"
+		config.AppConfig.Database.Name = absPath
+		config.AppConfig.Server.Port = 8888
+
+		// 3. Initialize GORM with the test DB
+		global.DB, err = gorm.Open(sqlite.Open(config.AppConfig.Database.Name), &gorm.Config{})
+		if err != nil {
+			panic(fmt.Sprintf("Failed to connect to test DB: %v", err))
+		}
+
+		// No AutoMigrate - we are using the real schema
+		fmt.Println("✅ Test DB Initialized from data/flux.db")
 	}
-	defer sourceFile.Close()
-
-	destFile, err := os.Create(TestDBPath)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to create test DB at %s: %v", TestDBPath, err))
-	}
-	defer destFile.Close()
-
-	_, err = io.Copy(destFile, sourceFile)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to copy DB: %v", err))
-	}
-
-	// 2. Configure App to use the test DB
-	absPath, _ := filepath.Abs(TestDBPath)
-	config.AppConfig.Database.Type = "sqlite"
-	config.AppConfig.Database.Name = absPath
-	config.AppConfig.Server.Port = 8888
-
-	// 3. Initialize GORM with the test DB
-	global.DB, err = gorm.Open(sqlite.Open(config.AppConfig.Database.Name), &gorm.Config{})
-	if err != nil {
-		panic(fmt.Sprintf("Failed to connect to test DB: %v", err))
-	}
-
-	// No AutoMigrate - we are using the real schema
-	fmt.Println("✅ Test DB Initialized from data/flux.db")
 
 	// Verify or Create Default Node (ID: 1) for testing
 	var node model.Node
