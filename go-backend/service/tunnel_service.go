@@ -95,6 +95,13 @@ func (s *TunnelService) CreateTunnel(dto dto.TunnelDto) *result.Result {
 		}
 		tunnel.OutNodeId = *dto.OutNodeId
 		tunnel.OutIp = outNode.ServerIp
+
+		// 分配 ChainPort（出口节点上的 Chain 监听端口）
+		chainPort, err := s.allocateChainPort(outNode.ID)
+		if err != nil {
+			return result.Err(-1, "分配 Chain 端口失败: "+err.Error())
+		}
+		tunnel.ChainPort = chainPort
 	}
 
 	// Defaults
@@ -343,4 +350,51 @@ func (s *TunnelService) DeleteTunnel(id int64) *result.Result {
 		return result.Err(-1, "隧道删除失败")
 	}
 	return result.Ok("隧道删除成功")
+}
+
+// allocateChainPort 为隧道转发分配 Chain 监听端口（在出口节点上）
+func (s *TunnelService) allocateChainPort(outNodeId int64) (int, error) {
+	var node model.Node
+	if err := global.DB.First(&node, outNodeId).Error; err != nil {
+		return 0, fmt.Errorf("出口节点不存在")
+	}
+
+	usedPorts := s.getUsedChainPorts(outNodeId, nil)
+
+	for port := node.PortSta; port <= node.PortEnd; port++ {
+		if !usedPorts[port] {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("出口节点 %s 无可用端口", node.Name)
+}
+
+// getUsedChainPorts 获取出口节点上已使用的 Chain 端口
+func (s *TunnelService) getUsedChainPorts(nodeId int64, excludeTunnelId *int64) map[int]bool {
+	used := make(map[int]bool)
+
+	// 统计该节点作为出口节点的隧道的 ChainPort
+	var tunnels []model.Tunnel
+	query := global.DB.Where("out_node_id = ? AND type = 2 AND chain_port > 0", nodeId)
+	if excludeTunnelId != nil {
+		query = query.Where("id != ?", *excludeTunnelId)
+	}
+	query.Find(&tunnels)
+
+	for _, t := range tunnels {
+		used[t.ChainPort] = true
+	}
+
+	// 同时统计该节点作为入口节点的 forward.in_port
+	var inTunnels []int64
+	global.DB.Model(&model.Tunnel{}).Where("in_node_id = ?", nodeId).Pluck("id", &inTunnels)
+	if len(inTunnels) > 0 {
+		var forwards []model.Forward
+		global.DB.Where("tunnel_id IN ?", inTunnels).Find(&forwards)
+		for _, f := range forwards {
+			used[f.InPort] = true
+		}
+	}
+
+	return used
 }

@@ -54,7 +54,7 @@ func handleMigrate(args []string) {
 		}
 	}
 
-	fmt.Println("📦 开始数据迁移...")
+	fmt.Println("📦 开始隧道 ChainPort 迁移...")
 	if syncGost {
 		fmt.Println("   模式: 数据库 + Gost 配置同步")
 		fmt.Println("   注意: 离线节点将被跳过")
@@ -63,7 +63,7 @@ func handleMigrate(args []string) {
 	}
 	fmt.Println()
 
-	result := service.MigrateOutPortsWithSync(syncGost)
+	result := service.MigrateTunnelChainPorts(syncGost)
 
 	fmt.Println()
 	fmt.Println("📊 迁移结果:")
@@ -81,11 +81,11 @@ func handleMigrate(args []string) {
 
 // handleMigrateCheck 检查是否需要迁移
 func handleMigrateCheck() {
-	count := service.CheckOutPortMigrationNeeded()
+	count := service.CheckChainPortMigrationNeeded()
 	if count == 0 {
-		fmt.Println("✅ 所有隧道转发记录的 OutPort 已正确配置，无需迁移")
+		fmt.Println("✅ 所有隧道转发的 ChainPort 已正确配置，无需迁移")
 	} else {
-		fmt.Printf("⚠️  发现 %d 条隧道转发记录缺少 OutPort，需要迁移\n", count)
+		fmt.Printf("⚠️  发现 %d 个隧道需要分配 ChainPort\n", count)
 		fmt.Println("\n执行迁移:")
 		fmt.Println("  仅数据库:     ./go-backend migrate")
 		fmt.Println("  同步 Gost:    ./go-backend migrate --sync")

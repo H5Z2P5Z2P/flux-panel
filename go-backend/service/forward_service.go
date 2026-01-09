@@ -401,14 +401,16 @@ func (s *ForwardService) createGostServices(forward *model.Forward, tunnel *mode
 
 	// Type 2: Tunnel Forward
 	if tunnel.Type == 2 {
-		remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, forward.OutPort)
+		// 使用隧道的 ChainPort 构建 Chain 目标地址
+		remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, tunnel.ChainPort)
 		if strings.Contains(tunnel.OutIp, ":") {
-			remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, forward.OutPort)
+			remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, tunnel.ChainPort)
 		}
 		if res := utils.AddChains(inNode.ID, serviceName, remoteAddr, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
 			return fmt.Errorf("Chain Error: " + res.Msg)
 		}
-		if res := utils.AddRemoteService(outNode.ID, serviceName, forward.OutPort, forward.RemoteAddr, tunnel.Protocol, forward.Strategy, forward.InterfaceName); res.Msg != "OK" {
+		// RemoteService 在出口节点监听隧道的 ChainPort
+		if res := utils.AddRemoteService(outNode.ID, serviceName, tunnel.ChainPort, forward.RemoteAddr, tunnel.Protocol, forward.Strategy, forward.InterfaceName); res.Msg != "OK" {
 			utils.DeleteChains(inNode.ID, serviceName)
 			return fmt.Errorf("Remote Error: " + res.Msg)
 		}
@@ -437,9 +439,10 @@ func (s *ForwardService) updateGostServices(forward *model.Forward, tunnel *mode
 	}
 
 	if tunnel.Type == 2 {
-		remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, forward.OutPort)
+		// 使用隧道的 ChainPort 构建 Chain 目标地址
+		remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, tunnel.ChainPort)
 		if strings.Contains(tunnel.OutIp, ":") {
-			remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, forward.OutPort)
+			remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, tunnel.ChainPort)
 		}
 		if res := utils.UpdateChains(inNode.ID, serviceName, remoteAddr, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
 			// Fallback Add if not found
@@ -449,9 +452,10 @@ func (s *ForwardService) updateGostServices(forward *model.Forward, tunnel *mode
 				return fmt.Errorf("Update Chain Error: " + res.Msg)
 			}
 		}
-		if res := utils.UpdateRemoteService(outNode.ID, serviceName, forward.OutPort, forward.RemoteAddr, tunnel.Protocol, forward.Strategy, forward.InterfaceName); res.Msg != "OK" {
+		// RemoteService 使用隧道的 ChainPort
+		if res := utils.UpdateRemoteService(outNode.ID, serviceName, tunnel.ChainPort, forward.RemoteAddr, tunnel.Protocol, forward.Strategy, forward.InterfaceName); res.Msg != "OK" {
 			if strings.Contains(res.Msg, "not found") {
-				utils.AddRemoteService(outNode.ID, serviceName, forward.OutPort, forward.RemoteAddr, tunnel.Protocol, forward.Strategy, forward.InterfaceName)
+				utils.AddRemoteService(outNode.ID, serviceName, tunnel.ChainPort, forward.RemoteAddr, tunnel.Protocol, forward.Strategy, forward.InterfaceName)
 			} else {
 				return fmt.Errorf("Update Remote Service Error: " + res.Msg)
 			}

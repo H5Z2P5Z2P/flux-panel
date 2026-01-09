@@ -17,6 +17,7 @@ type Tunnel struct {
 	TcpListenAddr string  `json:"tcpListenAddr"`
 	UdpListenAddr string  `json:"udpListenAddr"`
 	InterfaceName string  `json:"interfaceName"`
+	ChainPort     int     `json:"chainPort"` // 隧道转发的 Chain 监听端口（出口节点）
 }
 
 func (Tunnel) TableName() string {

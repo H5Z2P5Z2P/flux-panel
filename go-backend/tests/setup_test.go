@@ -75,7 +75,17 @@ func SetupTestDB() {
 			panic(fmt.Sprintf("Failed to connect to test DB: %v", err))
 		}
 
-		// No AutoMigrate - we are using the real schema
+		// AutoMigrate to ensure new fields are added
+		global.DB.AutoMigrate(
+			&model.User{},
+			&model.Node{},
+			&model.Tunnel{},
+			&model.Forward{},
+			&model.UserTunnel{},
+			&model.SpeedLimit{},
+			&model.ViteConfig{},
+			&model.StatisticsFlow{},
+		)
 		fmt.Println("✅ Test DB Initialized from data/flux.db")
 	}
 
