@@ -304,7 +304,7 @@ func (s *ForwardService) DeleteForward(id int64, ctxUser *utils.UserClaims) *res
 
 	// Delete Gost Service
 	if err := s.deleteGostServices(&forward, &tunnel, &userTunnel); err != nil {
-		eturn result.Err(-1, "Gost服务删除失败: "+err.Error())
+		return result.Err(-1, "Gost服务删除失败: "+err.Error())
 	}
 
 	global.DB.Delete(&forward)
