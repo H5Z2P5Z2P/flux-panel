@@ -110,7 +110,11 @@ func (s *ForwardService) CreateForward(dto dto.ForwardDto, ctxUser *utils.UserCl
 	}
 
 	// 3. Allocate Port
-	portAlloc, err := s.allocatePorts(&tunnel, dto.InPort, nil)
+	var specifiedOutPort *int
+	if dto.OutPort != 0 {
+		specifiedOutPort = &dto.OutPort
+	}
+	portAlloc, err := s.allocatePorts(&tunnel, dto.InPort, specifiedOutPort, nil)
 	if err != nil {
 		return result.Err(-1, err.Error())
 	}
@@ -198,8 +202,39 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 	// Update Port Allocation if needed
 	var portAlloc *PortAllocResult
 	var err error
-	if tunnelChanged || (dto.InPort != nil && forward.InPort != *dto.InPort) { // If InPort changed user-side or tunnel changed
-		portAlloc, err = s.allocatePorts(&tunnel, dto.InPort, &id)
+
+	outPortChanged := dto.OutPort != 0 && forward.OutPort != dto.OutPort
+	if dto.OutPort == 0 && forward.OutPort != 0 {
+		// If user didn't specify (sent 0), keep existing unless tunnel changed type (which is handled by tunnelChanged logic partly)
+		// actually if tunnel changed, we re-allocate.
+	}
+
+	if tunnelChanged || (dto.InPort != nil && forward.InPort != *dto.InPort) || outPortChanged {
+		var specifiedOutPort *int
+		if dto.OutPort != 0 {
+			specifiedOutPort = &dto.OutPort
+		} else if !tunnelChanged {
+			// If not changing tunnel and not specifying new out port, keep old one?
+			// No, if only InPort changed, OutPort should stay same if not specified.
+			// But allocatePorts will verify availability.
+			// Let's passed the desired outport.
+			// If dto.OutPort is 0, we might want to keep existing if compatible?
+			// Simplest: if dto.OutPort is 0 and we are updating, check if we should keep existing.
+			// However, for update, usually we pass what we want. If 0, maybe auto-allocate?
+			// Let's assume frontend passes existing OutPort if not changed.
+			// If frontend passes 0, it means auto-allocate.
+		}
+
+		// If tunnel didn't change and outport didn't change (dto.OutPort matches forward.OutPort or is 0 and we keep forward.OutPort),
+		// we might not need to re-check outport if only InPort changed.
+		// But allocatePorts checks everything.
+
+		// Let's refine:
+		if dto.OutPort != 0 {
+			specifiedOutPort = &dto.OutPort
+		}
+
+		portAlloc, err = s.allocatePorts(&tunnel, dto.InPort, specifiedOutPort, &id)
 		if err != nil {
 			return result.Err(-1, err.Error())
 		}
@@ -347,6 +382,7 @@ func (s *ForwardService) GetAllForwards(ctxUser *utils.UserClaims) *result.Resul
 			Strategy:      f.Strategy,
 			Inx:           f.Inx,
 			InterfaceName: f.InterfaceName,
+			OutPort:       f.OutPort,
 		}
 		response = append(response, resDto)
 	}
@@ -467,7 +503,7 @@ type PortAllocResult struct {
 	OutPort int
 }
 
-func (s *ForwardService) allocatePorts(tunnel *model.Tunnel, specifiedInPort *int, excludeForwardId *int64) (*PortAllocResult, error) {
+func (s *ForwardService) allocatePorts(tunnel *model.Tunnel, specifiedInPort *int, specifiedOutPort *int, excludeForwardId *int64) (*PortAllocResult, error) {
 	// Allocate InPort
 	var inPort int
 	if specifiedInPort != nil {
@@ -486,12 +522,19 @@ func (s *ForwardService) allocatePorts(tunnel *model.Tunnel, specifiedInPort *in
 	// Allocate OutPort (for Tunnel Forward)
 	var outPort int
 	if tunnel.Type == 2 {
-		// Tunnel Forward needs output node port
-		p, err := s.findFreePort(tunnel.OutNodeId, excludeForwardId)
-		if err != nil {
-			return nil, fmt.Errorf("出口节点无可用端口")
+		if specifiedOutPort != nil && *specifiedOutPort != 0 {
+			if err := s.checkPortAvailable(tunnel.OutNodeId, *specifiedOutPort, excludeForwardId); err != nil {
+				return nil, fmt.Errorf("出口端口不可用: %v", err)
+			}
+			outPort = *specifiedOutPort
+		} else {
+			// Tunnel Forward needs output node port
+			p, err := s.findFreePort(tunnel.OutNodeId, excludeForwardId)
+			if err != nil {
+				return nil, fmt.Errorf("出口节点无可用端口")
+			}
+			outPort = p
 		}
-		outPort = p
 	} else {
 		// Port Forward: OutPort same as InPort (or irrelevant)
 		outPort = inPort
