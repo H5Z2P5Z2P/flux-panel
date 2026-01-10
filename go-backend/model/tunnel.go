@@ -37,6 +37,7 @@ type TunnelNode struct {
 	TcpListenAddr string `json:"tcpListenAddr"`
 	UdpListenAddr string `json:"udpListenAddr"`
 	InterfaceName string `json:"interfaceName"`
+	Tunnel        Tunnel `gorm:"foreignKey:TunnelId" json:"-"`
 }
 
 func (Tunnel) TableName() string {

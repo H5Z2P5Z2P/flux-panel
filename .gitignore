@@ -263,3 +263,5 @@ go-gost/agent
 go-gost/agent-linux-amd64
 go-gost/flux-agent-linux-amd64
 go-gost/flux-agent-linux-arm64
+go-backend/go-backend
+.agent

@@ -70,6 +70,7 @@ func InitRouter() *gin.Engine {
 				node.POST("/update", middleware.RequireRole(0), nodeController.Update)
 				node.POST("/delete", middleware.RequireRole(0), nodeController.Delete)
 				node.POST("/install", middleware.RequireRole(0), nodeController.Install)
+				node.POST("/push", middleware.RequireRole(0), nodeController.Push)
 			}
 
 			// Tunnel

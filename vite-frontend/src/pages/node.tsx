@@ -18,7 +18,8 @@ import {
   getNodeList,
   updateNode,
   deleteNode,
-  getNodeInstallCommand
+  getNodeInstallCommand,
+  pushNodeConfig
 } from "@/api";
 
 interface Node {
@@ -43,6 +44,7 @@ interface Node {
     uptime: number;
   } | null;
   copyLoading?: boolean;
+  pushLoading?: boolean;
 }
 
 interface NodeForm {
@@ -542,6 +544,33 @@ export default function NodePage() {
     }
   };
 
+  // 推送节点配置
+  const handlePushConfig = async (node: Node) => {
+    if (node.connectionStatus !== 'online') {
+      toast.error('节点离线，无法推送配置');
+      return;
+    }
+
+    setNodeList(prev => prev.map(n =>
+      n.id === node.id ? { ...n, pushLoading: true } : n
+    ));
+
+    try {
+      const res = await pushNodeConfig(node.id);
+      if (res.code === 0) {
+        toast.success('配置下发命令已发送');
+      } else {
+        toast.error(res.msg || '配置下发失败');
+      }
+    } catch (error) {
+      toast.error('网络错误，请重试');
+    } finally {
+      setNodeList(prev => prev.map(n =>
+        n.id === node.id ? { ...n, pushLoading: false } : n
+      ));
+    }
+  };
+
   // 提交表单
   const handleSubmit = async () => {
     if (!validateForm()) return;
@@ -836,6 +865,17 @@ export default function NodePage() {
                       className="flex-1 min-h-8"
                     >
                       编辑
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      color="secondary"
+                      onPress={() => handlePushConfig(node)}
+                      isLoading={node.pushLoading}
+                      isDisabled={node.connectionStatus !== 'online'}
+                      className="flex-1 min-h-8"
+                    >
+                      下发
                     </Button>
                     <Button
                       size="sm"

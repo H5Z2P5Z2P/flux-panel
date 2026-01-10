@@ -52,3 +52,13 @@ func (u *NodeController) Install(c *gin.Context) {
 	id := int64(params["id"].(float64))
 	c.JSON(http.StatusOK, service.Node.GetInstallCommand(id))
 }
+
+func (u *NodeController) Push(c *gin.Context) {
+	var params map[string]interface{}
+	if err := c.ShouldBindJSON(&params); err != nil {
+		service.ResponseError(c, -1, "参数错误")
+		return
+	}
+	id := int64(params["id"].(float64))
+	c.JSON(http.StatusOK, service.Node.PushNodeConfig(id))
+}

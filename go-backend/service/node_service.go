@@ -163,3 +163,101 @@ func (s *NodeService) syncNodeProtocolIfNeeded(node *model.Node, req dto.NodeUpd
 	}
 	return nil
 }
+
+func (s *NodeService) PushNodeConfig(id int64) *result.Result {
+	var node model.Node
+	if err := global.DB.First(&node, id).Error; err != nil {
+		return result.Err(-1, "节点不存在")
+	}
+
+	if node.Status != 1 {
+		return result.Err(-1, "节点当前离线")
+	}
+
+	// 1. 同步节点协议 (SetProtocol)
+	payload := map[string]interface{}{
+		"http":  node.Http,
+		"tls":   node.Tls,
+		"socks": node.Socks,
+	}
+	websocket.SendMsg(node.ID, payload, "SetProtocol")
+
+	// 2. 收集并下发所有关联配置
+	// A. 收集所有相关的隧道
+	var tunnelNodes []model.TunnelNode
+	global.DB.Preload("Tunnel").Where("node_id = ?", id).Find(&tunnelNodes)
+
+	// 用于存储已处理的隧道 ID，避免重复下发共享服务
+	processedTunnelIds := make(map[int64]bool)
+
+	for _, tn := range tunnelNodes {
+		tunnel := tn.Tunnel
+		if tunnel.Status != 1 {
+			continue
+		}
+
+		// A1. 下发限速器 (AddLimiters)
+		var limit model.SpeedLimit
+		if global.DB.Where("tunnel_id = ? AND status = 1", tunnel.ID).First(&limit).Error == nil {
+			utils.AddLimiters(node.ID, limit.ID, fmt.Sprintf("%d", limit.Speed))
+		}
+
+		// A2. 下发隧道共享服务 (Only for Type 2)
+		if tunnel.Type == 2 && !processedTunnelIds[tunnel.ID] {
+			processedTunnelIds[tunnel.ID] = true
+			// 获取隧道的所有节点信息以构建 Chain
+			var allTNs []model.TunnelNode
+			global.DB.Where("tunnel_id = ?", tunnel.ID).Order("inx asc").Find(&allTNs)
+
+			// 获取所有节点的 ServerIp 以构建 Addr
+			nodeIds := make([]int64, 0)
+			for _, t := range allTNs {
+				nodeIds = append(nodeIds, t.NodeId)
+			}
+			var nodes []model.Node
+			global.DB.Where("id IN ?", nodeIds).Find(&nodes)
+			nodeMap := make(map[int64]model.Node)
+			for _, n := range nodes {
+				nodeMap[n.ID] = n
+			}
+
+			if tn.Type == 1 {
+				// 入口节点：下发 AddChains
+				nodeInfos := make([]dto.TunnelNodeInfo, 0)
+				for _, t := range allTNs {
+					n := nodeMap[t.NodeId]
+					addr := n.ServerIp
+					if strings.Contains(addr, ":") {
+						addr = "[" + addr + "]"
+					}
+					nodeInfos = append(nodeInfos, dto.TunnelNodeInfo{
+						TunnelNode: t,
+						Addr:       fmt.Sprintf("%s:%d", addr, t.Port),
+					})
+				}
+				utils.AddTunnelChain(node.ID, tunnel.ID, nodeInfos)
+			} else {
+				// 中转/出口节点：下发 AddService (Relay)
+				utils.AddTunnelRelayService(node.ID, tunnel.ID, tn.Port, tn.Protocol, tn.InterfaceName)
+			}
+		}
+
+		// A3. 下发转发监听配置 (AddService) - 仅入口节点需要
+		if tn.Type == 1 {
+			var forwards []model.Forward
+			global.DB.Where("tunnel_id = ? AND status = 1", tunnel.ID).Find(&forwards)
+			for _, f := range forwards {
+				var limiter *int
+				if limit.ID != 0 {
+					l := int(limit.ID)
+					limiter = &l
+				}
+				// 注意：这里可能需要检查 interfaceName，根据 ForwardDto 逻辑
+				// 先按 service 逻辑还原
+				utils.AddService(node.ID, fmt.Sprintf("forward_%d", f.ID), f.InPort, limiter, f.RemoteAddr, tunnel.Type, tunnel, f.Strategy, tn.InterfaceName)
+			}
+		}
+	}
+
+	return result.Ok("配置推送完成")
+}
