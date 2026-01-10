@@ -277,18 +277,16 @@ func createServiceConfig(name string, inPort int, limiter *int, remoteAddr, prot
 	}
 	service["listener"] = listener
 
-	// Forwarder (Port Forward only)
-	if fowType == 1 {
-		forwarder := map[string]interface{}{
-			"nodes": createNodes(remoteAddr),
-			"selector": map[string]interface{}{
-				"strategy":    strategyStr(strategy),
-				"maxFails":    1,
-				"failTimeout": "20s",
-			},
-		}
-		service["forwarder"] = forwarder
+	// Forwarder
+	forwarder := map[string]interface{}{
+		"nodes": createNodes(remoteAddr),
+		"selector": map[string]interface{}{
+			"strategy":    strategyStr(strategy),
+			"maxFails":    1,
+			"failTimeout": "20s",
+		},
 	}
+	service["forwarder"] = forwarder
 	return service
 }
 

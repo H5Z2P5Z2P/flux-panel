@@ -269,10 +269,8 @@ func (s *TunnelService) DiagnoseTunnel(tunnelId int64) *result.Result {
 			return result.Err(-1, "出口节点不存在")
 		}
 
-		outPort := s.getOutNodeTcpPort(tunnel.ID)
-
 		// In -> Out
-		res1 := s.PerformTcpPing(&inNode, outNode.ServerIp, outPort, "入口->出口")
+		res1 := s.PerformTcpPing(&inNode, outNode.ServerIp, tunnel.OutPort, "入口->出口")
 		results = append(results, res1)
 
 		// Out -> External
@@ -298,10 +296,9 @@ func (s *TunnelService) PerformTcpPing(node *model.Node, targetIp string, port i
 	payload := map[string]interface{}{
 		"ip":      targetIp,
 		"port":    port,
-		"count":   4,
-		"timeout": 5000,
+		"count":   1,
+		"timeout": 3000,
 	}
-
 	gostRes := websocket.SendMsg(node.ID, payload, "TcpPing")
 
 	res := map[string]interface{}{
@@ -310,22 +307,20 @@ func (s *TunnelService) PerformTcpPing(node *model.Node, targetIp string, port i
 		"targetIp":    targetIp,
 		"targetPort":  port,
 		"description": desc,
-		"timestamp":   time.Now().UnixMilli(),
-		"averageTime": -1.0,
-		"packetLoss":  100.0,
 		"success":     false,
 		"message":     "节点无响应",
+		"timestamp":   time.Now().UnixMilli(),
 	}
 
 	if gostRes != nil && gostRes.Msg == "OK" {
-		if dataMap, ok := gostRes.Data.(map[string]interface{}); ok {
-			res["success"] = dataMap["success"]
-			if dataMap["success"] == true {
+		res["success"] = true
+		if gostRes.Data != nil {
+			if dataMap, ok := gostRes.Data.(map[string]interface{}); ok {
 				res["message"] = "TCP连接成功"
 				res["averageTime"] = dataMap["averageTime"]
 				res["packetLoss"] = dataMap["packetLoss"]
 			} else {
-				res["message"] = dataMap["errorMessage"]
+				res["message"] = "解析响应失败"
 			}
 		} else {
 			// Fallback simple success
@@ -342,11 +337,11 @@ func (s *TunnelService) PerformTcpPing(node *model.Node, targetIp string, port i
 }
 
 func (s *TunnelService) getOutNodeTcpPort(tunnelId int64) int {
-	var forward model.Forward
-	if err := global.DB.Where("tunnel_id = ? AND status = 1", tunnelId).First(&forward).Error; err == nil {
-		return forward.OutPort
+	var tunnel model.Tunnel
+	if err := global.DB.First(&tunnel, tunnelId).Error; err == nil {
+		return tunnel.OutPort
 	}
-	return 22 // Default SSH
+	return 0
 }
 
 func (s *TunnelService) DeleteTunnel(id int64) *result.Result {

@@ -813,7 +813,7 @@ func (s *ForwardService) DiagnoseForward(id int64, ctxUser *utils.UserClaims) *r
 	} else {
 		// Tunnel Forward: InNode -> OutNode, OutNode -> Targets
 		// In -> Out
-		resIn := Tunnel.PerformTcpPing(inNode, outNode.ServerIp, forward.OutPort, "入口->出口")
+		resIn := Tunnel.PerformTcpPing(inNode, outNode.ServerIp, tunnel.OutPort, "入口->出口")
 		results = append(results, resIn)
 
 		// Out -> Targets
