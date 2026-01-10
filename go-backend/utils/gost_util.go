@@ -132,6 +132,117 @@ func DeleteChains(nodeId int64, name string) *dto.GostDto {
 	return websocket.SendMsg(nodeId, req, "DeleteChains")
 }
 
+// --- Tunnel 级别共享服务函数 ---
+
+// buildTunnelChainName 生成 tunnel 级别共享 chain 名称
+func BuildTunnelChainName(tunnelId int64) string {
+	return fmt.Sprintf("tunnel_%d_chains", tunnelId)
+}
+
+// buildTunnelServiceName 生成 tunnel 级别共享 service 名称
+func buildTunnelServiceName(tunnelId int64) string {
+	return fmt.Sprintf("tunnel_%d_relay", tunnelId)
+}
+
+// AddTunnelChain 创建 tunnel 级别的共享 chain（在入口节点）
+func AddTunnelChain(nodeId int64, tunnelId int64, remoteAddr, protocol, interfaceName string) *dto.GostDto {
+	data := createTunnelChainConfig(tunnelId, remoteAddr, protocol, interfaceName)
+	return websocket.SendMsg(nodeId, data, "AddChains")
+}
+
+// UpdateTunnelChain 更新 tunnel 级别的共享 chain
+func UpdateTunnelChain(nodeId int64, tunnelId int64, remoteAddr, protocol, interfaceName string) *dto.GostDto {
+	data := createTunnelChainConfig(tunnelId, remoteAddr, protocol, interfaceName)
+	req := map[string]interface{}{
+		"chain": BuildTunnelChainName(tunnelId),
+		"data":  data,
+	}
+	return websocket.SendMsg(nodeId, req, "UpdateChains")
+}
+
+// DeleteTunnelChain 删除 tunnel 级别的共享 chain
+func DeleteTunnelChain(nodeId int64, tunnelId int64) *dto.GostDto {
+	req := map[string]interface{}{
+		"chain": BuildTunnelChainName(tunnelId),
+	}
+	return websocket.SendMsg(nodeId, req, "DeleteChains")
+}
+
+// AddTunnelRelayService 在出口节点创建 tunnel 共享的 relay service
+func AddTunnelRelayService(nodeId int64, tunnelId int64, outPort int, protocol, interfaceName string) *dto.GostDto {
+	data := createTunnelRelayConfig(tunnelId, outPort, protocol, interfaceName)
+	services := []map[string]interface{}{data}
+	return websocket.SendMsg(nodeId, services, "AddService")
+}
+
+// UpdateTunnelRelayService 更新 tunnel 共享的 relay service
+func UpdateTunnelRelayService(nodeId int64, tunnelId int64, outPort int, protocol, interfaceName string) *dto.GostDto {
+	data := createTunnelRelayConfig(tunnelId, outPort, protocol, interfaceName)
+	services := []map[string]interface{}{data}
+	return websocket.SendMsg(nodeId, services, "UpdateService")
+}
+
+// DeleteTunnelRelayService 删除 tunnel 共享的 relay service
+func DeleteTunnelRelayService(nodeId int64, tunnelId int64) *dto.GostDto {
+	req := map[string]interface{}{
+		"services": []string{buildTunnelServiceName(tunnelId)},
+	}
+	return websocket.SendMsg(nodeId, req, "DeleteService")
+}
+
+// createTunnelChainConfig 创建 tunnel 级别 chain 配置
+func createTunnelChainConfig(tunnelId int64, remoteAddr, protocol, interfaceName string) map[string]interface{} {
+	dialer := map[string]interface{}{"type": protocol}
+	if protocol == "quic" {
+		dialer["metadata"] = map[string]interface{}{
+			"keepAlive": true,
+			"ttl":       "10s",
+		}
+	}
+
+	connector := map[string]interface{}{"type": "relay"}
+
+	node := map[string]interface{}{
+		"name":      fmt.Sprintf("tunnel-%d-node", tunnelId),
+		"addr":      remoteAddr,
+		"connector": connector,
+		"dialer":    dialer,
+	}
+	if interfaceName != "" {
+		node["interface"] = interfaceName
+	}
+
+	hop := map[string]interface{}{
+		"name":  fmt.Sprintf("tunnel-%d-hop", tunnelId),
+		"nodes": []map[string]interface{}{node},
+	}
+
+	return map[string]interface{}{
+		"name": BuildTunnelChainName(tunnelId),
+		"hops": []map[string]interface{}{hop},
+	}
+}
+
+// createTunnelRelayConfig 创建 tunnel 级别 relay service 配置
+func createTunnelRelayConfig(tunnelId int64, outPort int, protocol, interfaceName string) map[string]interface{} {
+	data := make(map[string]interface{})
+	data["name"] = buildTunnelServiceName(tunnelId)
+	data["addr"] = fmt.Sprintf(":%d", outPort)
+
+	if interfaceName != "" {
+		data["metadata"] = map[string]interface{}{"interface": interfaceName}
+	}
+
+	// relay handler - no forwarder, just relay traffic
+	handler := map[string]interface{}{"type": "relay"}
+	data["handler"] = handler
+
+	listener := map[string]interface{}{"type": protocol}
+	data["listener"] = listener
+
+	return data
+}
+
 // --- Helpers ---
 
 func createServiceConfig(name string, inPort int, limiter *int, remoteAddr, protocol string, fowType int, tunnel model.Tunnel, strategy, interfaceName string) map[string]interface{} {
@@ -154,8 +265,8 @@ func createServiceConfig(name string, inPort int, limiter *int, remoteAddr, prot
 
 	// Handler
 	handler := map[string]interface{}{"type": protocol}
-	if fowType != 1 { // Forward Type != 1 (Tunnel Forward)
-		handler["chain"] = name + "_chains"
+	if fowType == 2 { // Tunnel Forward - 使用 tunnel 级别共享 chain
+		handler["chain"] = BuildTunnelChainName(tunnel.ID)
 	}
 	service["handler"] = handler
 

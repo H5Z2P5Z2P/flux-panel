@@ -27,21 +27,19 @@ type TunnelUpdateDto struct {
 }
 
 type TunnelListDto struct {
-	ID            int    `json:"id"`
-	Name          string `json:"name"`
-	Ip            string `json:"ip"`
-	Type          int    `json:"type"`
-	Protocol      string `json:"protocol"`
-	InNodePortSta int    `json:"inNodePortSta"`
-	InNodePortEnd int    `json:"inNodePortEnd"`
+	ID               int    `json:"id"`
+	Name             string `json:"name"`
+	Ip               string `json:"ip"`
+	Type             int    `json:"type"`
+	Protocol         string `json:"protocol"`
+	InNodePortRanges string `json:"inNodePortRanges"` // 格式: "1080,1090,2080-3080"
 }
 
 type UserTunnelResponseDto struct {
-	ID            int64  `json:"id"`
-	Name          string `json:"name"`
-	Ip            string `json:"ip"`
-	InNodePortSta int    `json:"inNodePortSta"`
-	InNodePortEnd int    `json:"inNodePortEnd"`
-	Type          int    `json:"type"`
-	Protocol      string `json:"protocol"`
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	Ip               string `json:"ip"`
+	InNodePortRanges string `json:"inNodePortRanges"` // 格式: "1080,1090,2080-3080"
+	Type             int    `json:"type"`
+	Protocol         string `json:"protocol"`
 }

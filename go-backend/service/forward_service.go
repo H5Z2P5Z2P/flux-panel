@@ -358,25 +358,13 @@ func (s *ForwardService) GetAllForwards(ctxUser *utils.UserClaims) *result.Resul
 
 func (s *ForwardService) createGostServices(forward *model.Forward, tunnel *model.Tunnel, limiter *int, userTunnel *model.UserTunnel) error {
 	serviceName := s.buildServiceName(forward.ID, forward.UserId, userTunnel)
-	inNode, outNode, err := s.getRequiredNodes(tunnel)
+	inNode, _, err := s.getRequiredNodes(tunnel)
 	if err != nil {
 		return err
 	}
 
-	// Type 2: Tunnel Forward
-	if tunnel.Type == 2 {
-		remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, forward.OutPort)
-		if strings.Contains(tunnel.OutIp, ":") {
-			remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, forward.OutPort)
-		}
-		if res := utils.AddChains(inNode.ID, serviceName, remoteAddr, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
-			return fmt.Errorf("Chain Error: " + res.Msg)
-		}
-		if res := utils.AddRemoteService(outNode.ID, serviceName, forward.OutPort, forward.RemoteAddr, tunnel.Protocol, forward.Strategy, forward.InterfaceName); res.Msg != "OK" {
-			utils.DeleteChains(inNode.ID, serviceName)
-			return fmt.Errorf("Remote Error: " + res.Msg)
-		}
-	}
+	// Type 2 现在使用 tunnel 级别的共享 chain 和 relay service
+	// 不再为每个 forward 单独创建 chain 和 remote service
 
 	interfaceName := ""
 	if tunnel.Type == 1 {
@@ -384,10 +372,6 @@ func (s *ForwardService) createGostServices(forward *model.Forward, tunnel *mode
 	}
 
 	if res := utils.AddService(inNode.ID, serviceName, forward.InPort, limiter, forward.RemoteAddr, tunnel.Type, *tunnel, forward.Strategy, interfaceName); res.Msg != "OK" {
-		utils.DeleteChains(inNode.ID, serviceName)
-		if outNode != nil {
-			utils.DeleteRemoteService(outNode.ID, serviceName)
-		}
 		return fmt.Errorf("Service Error: " + res.Msg)
 	}
 	return nil
@@ -395,32 +379,13 @@ func (s *ForwardService) createGostServices(forward *model.Forward, tunnel *mode
 
 func (s *ForwardService) updateGostServices(forward *model.Forward, tunnel *model.Tunnel, limiter *int, userTunnel *model.UserTunnel) error {
 	serviceName := s.buildServiceName(forward.ID, forward.UserId, userTunnel)
-	inNode, outNode, err := s.getRequiredNodes(tunnel)
+	inNode, _, err := s.getRequiredNodes(tunnel)
 	if err != nil {
 		return err
 	}
 
-	if tunnel.Type == 2 {
-		remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, forward.OutPort)
-		if strings.Contains(tunnel.OutIp, ":") {
-			remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, forward.OutPort)
-		}
-		if res := utils.UpdateChains(inNode.ID, serviceName, remoteAddr, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
-			// Fallback Add if not found
-			if strings.Contains(res.Msg, "not found") {
-				utils.AddChains(inNode.ID, serviceName, remoteAddr, tunnel.Protocol, tunnel.InterfaceName)
-			} else {
-				return fmt.Errorf("Update Chain Error: " + res.Msg)
-			}
-		}
-		if res := utils.UpdateRemoteService(outNode.ID, serviceName, forward.OutPort, forward.RemoteAddr, tunnel.Protocol, forward.Strategy, forward.InterfaceName); res.Msg != "OK" {
-			if strings.Contains(res.Msg, "not found") {
-				utils.AddRemoteService(outNode.ID, serviceName, forward.OutPort, forward.RemoteAddr, tunnel.Protocol, forward.Strategy, forward.InterfaceName)
-			} else {
-				return fmt.Errorf("Update Remote Service Error: " + res.Msg)
-			}
-		}
-	}
+	// Type 2 现在使用 tunnel 级别的共享 chain 和 relay service
+	// 不再为每个 forward 单独更新 chain 和 remote service
 
 	interfaceName := ""
 	if tunnel.Type == 1 {
@@ -440,8 +405,10 @@ func (s *ForwardService) updateGostServices(forward *model.Forward, tunnel *mode
 
 func (s *ForwardService) deleteGostServices(forward *model.Forward, tunnel *model.Tunnel, userTunnel *model.UserTunnel) error {
 	serviceName := s.buildServiceName(forward.ID, forward.UserId, userTunnel)
-	inNode, outNode, _ := s.getRequiredNodes(tunnel)
+	inNode, _, _ := s.getRequiredNodes(tunnel)
 
+	// 只删除入口节点的 service
+	// Type 2 的共享 chain 和 relay service 由 tunnel 删除时清理
 	if inNode != nil {
 		res := utils.DeleteService(inNode.ID, serviceName)
 		if res.Msg != "OK" {
@@ -449,14 +416,6 @@ func (s *ForwardService) deleteGostServices(forward *model.Forward, tunnel *mode
 		}
 	}
 
-	if tunnel.Type == 2 {
-		if inNode != nil {
-			utils.DeleteChains(inNode.ID, serviceName)
-		}
-		if outNode != nil {
-			utils.DeleteRemoteService(outNode.ID, serviceName)
-		}
-	}
 	return nil
 }
 
@@ -483,15 +442,12 @@ func (s *ForwardService) allocatePorts(tunnel *model.Tunnel, specifiedInPort *in
 		inPort = p
 	}
 
-	// Allocate OutPort (for Tunnel Forward)
+	// OutPort 处理
 	var outPort int
 	if tunnel.Type == 2 {
-		// Tunnel Forward needs output node port
-		p, err := s.findFreePort(tunnel.OutNodeId, excludeForwardId)
-		if err != nil {
-			return nil, fmt.Errorf("出口节点无可用端口")
-		}
-		outPort = p
+		// Type 2 隧道转发：使用 tunnel 级别的共享 OutPort
+		// 不再为每个 forward 单独分配端口
+		outPort = tunnel.OutPort
 	} else {
 		// Port Forward: OutPort same as InPort (or irrelevant)
 		outPort = inPort
@@ -505,7 +461,12 @@ func (s *ForwardService) checkPortAvailable(nodeId int64, port int, excludeForwa
 	if err := global.DB.First(&node, nodeId).Error; err != nil {
 		return fmt.Errorf("节点不存在")
 	}
-	if port < node.PortSta || port > node.PortEnd {
+	// 解析端口范围
+	ranges, err := utils.ParsePortRanges(node.PortRanges)
+	if err != nil {
+		return fmt.Errorf("节点端口配置错误: %s", err.Error())
+	}
+	if !utils.IsPortInRanges(port, ranges) {
 		return fmt.Errorf("端口不在允许范围内")
 	}
 	if s.isPortUsed(nodeId, port, excludeForwardId) {
@@ -519,8 +480,14 @@ func (s *ForwardService) findFreePort(nodeId int64, excludeForwardId *int64) (in
 	if err := global.DB.First(&node, nodeId).Error; err != nil {
 		return 0, err
 	}
+	// 解析端口范围
+	ranges, err := utils.ParsePortRanges(node.PortRanges)
+	if err != nil {
+		return 0, fmt.Errorf("节点端口配置错误: %s", err.Error())
+	}
+	allPorts := utils.GetAllPorts(ranges)
 	used := s.getUsedPorts(nodeId, excludeForwardId)
-	for p := node.PortSta; p <= node.PortEnd; p++ {
+	for _, p := range allPorts {
 		if !used[p] {
 			return p, nil
 		}

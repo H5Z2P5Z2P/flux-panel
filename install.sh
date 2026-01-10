@@ -20,12 +20,12 @@ get_architecture() {
 build_download_url() {
     local ARCH=$(get_architecture)
     # echo "https://github.com/bqlpfy/flux-panel/releases/download/1.4.3/gost-${ARCH}"
-    echo "https://minio.uily.de/files/flux-agent/flux-agent-linux-${ARCH}"
+    echo "https://minio.uily.de/files/flux-agent/new-flux-agent-linux-${ARCH}"
 }
 
 # 下载地址
 DOWNLOAD_URL=$(build_download_url)
-INSTALL_DIR="/etc/gost"
+INSTALL_DIR="/etc/gost_flux"
 # COUNTRY=$(curl -s https://ipinfo.io/country)
 # if [ "$COUNTRY" = "CN" ]; then
 #     # 拼接 URL
@@ -166,27 +166,27 @@ install_gost() {
   mkdir -p "$INSTALL_DIR"
 
   # 停止并禁用已有服务
-  if systemctl list-units --full -all | grep -Fq "gost.service"; then
+  if systemctl list-units --full -all | grep -Fq "gost_flux.service"; then
     echo "🔍 检测到已存在的gost服务"
-    systemctl stop gost 2>/dev/null && echo "🛑 停止服务"
-    systemctl disable gost 2>/dev/null && echo "🚫 禁用自启"
+    systemctl stop gost_flux 2>/dev/null && echo "🛑 停止服务"
+    systemctl disable gost_flux 2>/dev/null && echo "🚫 禁用自启"
   fi
 
   # 删除旧文件
-  [[ -f "$INSTALL_DIR/gost" ]] && echo "🧹 删除旧文件 gost" && rm -f "$INSTALL_DIR/gost"
+  [[ -f "$INSTALL_DIR/gost_flux" ]] && echo "🧹 删除旧文件 gost_flux" && rm -f "$INSTALL_DIR/gost_flux"
 
   # 下载 gost
   echo "⬇️ 下载 gost 中..."
-  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost"
-  if [[ ! -f "$INSTALL_DIR/gost" || ! -s "$INSTALL_DIR/gost" ]]; then
+  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost_flux"
+  if [[ ! -f "$INSTALL_DIR/gost_flux" || ! -s "$INSTALL_DIR/gost_flux" ]]; then
     echo "❌ 下载失败，请检查网络或下载链接。"
     exit 1
   fi
-  chmod +x "$INSTALL_DIR/gost"
+  chmod +x "$INSTALL_DIR/gost_flux"
   echo "✅ 下载完成"
 
   # 打印版本
-  echo "🔎 gost 版本：$($INSTALL_DIR/gost -V)"
+  echo "🔎 gost 版本：$($INSTALL_DIR/gost_flux -V)"
 
   # 写入 config.json (安装时总是创建新的)
   CONFIG_FILE="$INSTALL_DIR/config.json"
@@ -213,7 +213,7 @@ EOF
   chmod 600 "$INSTALL_DIR"/*.json
 
   # 创建 systemd 服务
-  SERVICE_FILE="/etc/systemd/system/gost.service"
+  SERVICE_FILE="/etc/systemd/system/gost_flux.service"
   cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Gost Proxy Service
@@ -221,7 +221,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/gost
+ExecStart=$INSTALL_DIR/gost_flux
 Restart=on-failure
 
 [Install]
@@ -230,18 +230,18 @@ EOF
 
   # 启动服务
   systemctl daemon-reload
-  systemctl enable gost
-  systemctl start gost
+  systemctl enable gost_flux
+  systemctl start gost_flux
 
   # 检查状态
   echo "🔄 检查服务状态..."
-  if systemctl is-active --quiet gost; then
+  if systemctl is-active --quiet gost_flux; then
     echo "✅ 安装完成，gost服务已启动并设置为开机启动。"
     echo "📁 配置目录: $INSTALL_DIR"
-    echo "🔧 服务状态: $(systemctl is-active gost)"
+    echo "🔧 服务状态: $(systemctl is-active gost_flux)"
   else
     echo "❌ gost服务启动失败，请执行以下命令查看日志："
-    echo "journalctl -u gost -f"
+    echo "journalctl -u gost_flux -f"
   fi
 }
 
@@ -261,28 +261,28 @@ update_gost() {
   
   # 先下载新版本
   echo "⬇️ 下载最新版本..."
-  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost.new"
-  if [[ ! -f "$INSTALL_DIR/gost.new" || ! -s "$INSTALL_DIR/gost.new" ]]; then
+  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost_flux.new"
+  if [[ ! -f "$INSTALL_DIR/gost_flux.new" || ! -s "$INSTALL_DIR/gost_flux.new" ]]; then
     echo "❌ 下载失败。"
     return 1
   fi
 
   # 停止服务
-  if systemctl list-units --full -all | grep -Fq "gost.service"; then
+  if systemctl list-units --full -all | grep -Fq "gost_flux.service"; then
     echo "🛑 停止 gost 服务..."
-    systemctl stop gost
+    systemctl stop gost_flux
   fi
 
   # 替换文件
-  mv "$INSTALL_DIR/gost.new" "$INSTALL_DIR/gost"
-  chmod +x "$INSTALL_DIR/gost"
+  mv "$INSTALL_DIR/gost_flux.new" "$INSTALL_DIR/gost_flux"
+  chmod +x "$INSTALL_DIR/gost_flux"
   
   # 打印版本
-  echo "🔎 新版本：$($INSTALL_DIR/gost -V)"
+  echo "🔎 新版本：$($INSTALL_DIR/gost_flux -V)"
 
   # 重启服务
   echo "🔄 重启服务..."
-  systemctl start gost
+  systemctl start gost_flux
   
   echo "✅ 更新完成，服务已重新启动。"
 }
@@ -298,15 +298,15 @@ uninstall_gost() {
   fi
 
   # 停止并禁用服务
-  if systemctl list-units --full -all | grep -Fq "gost.service"; then
+  if systemctl list-units --full -all | grep -Fq "gost_flux.service"; then
     echo "🛑 停止并禁用服务..."
-    systemctl stop gost 2>/dev/null
-    systemctl disable gost 2>/dev/null
+    systemctl stop gost_flux 2>/dev/null
+    systemctl disable gost_flux 2>/dev/null
   fi
 
   # 删除服务文件
-  if [[ -f "/etc/systemd/system/gost.service" ]]; then
-    rm -f "/etc/systemd/system/gost.service"
+  if [[ -f "/etc/systemd/system/gost_flux.service" ]]; then
+    rm -f "/etc/systemd/system/gost_flux.service"
     echo "🧹 删除服务文件"
   fi
 

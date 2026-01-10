@@ -21,7 +21,7 @@ type NodeService struct{}
 var Node = new(NodeService)
 
 func (s *NodeService) CreateNode(dto dto.NodeDto) *result.Result {
-	if err := validatePortRange(*dto.PortSta, *dto.PortEnd); err != nil {
+	if err := utils.ValidatePortRangesString(dto.PortRanges); err != nil {
 		return result.Err(-1, err.Error())
 	}
 
@@ -30,8 +30,7 @@ func (s *NodeService) CreateNode(dto dto.NodeDto) *result.Result {
 		Name:        dto.Name,
 		Ip:          dto.Ip,
 		ServerIp:    dto.ServerIp,
-		PortSta:     *dto.PortSta,
-		PortEnd:     *dto.PortEnd,
+		PortRanges:  dto.PortRanges,
 		Http:        dto.Http,
 		Tls:         dto.Tls,
 		Socks:       dto.Socks,
@@ -62,12 +61,11 @@ func (s *NodeService) UpdateNode(dto dto.NodeUpdateDto) *result.Result {
 		return result.Err(-1, "节点不存在")
 	}
 
-	if dto.PortSta != nil && dto.PortEnd != nil {
-		if err := validatePortRange(*dto.PortSta, *dto.PortEnd); err != nil {
+	if dto.PortRanges != "" {
+		if err := utils.ValidatePortRangesString(dto.PortRanges); err != nil {
 			return result.Err(-1, err.Error())
 		}
-		node.PortSta = *dto.PortSta
-		node.PortEnd = *dto.PortEnd
+		node.PortRanges = dto.PortRanges
 	}
 
 	if err := s.syncNodeProtocolIfNeeded(&node, dto); err != nil {
@@ -136,16 +134,6 @@ func (s *NodeService) GetInstallCommand(id int64) *result.Result {
 	cmd := fmt.Sprintf("curl -L https://minio.uily.de/files/flux-agent/install.sh -o ./install.sh && chmod +x ./install.sh && ./install.sh -a %s -s %s", serverAddr, secret)
 
 	return result.Ok(cmd)
-}
-
-func validatePortRange(start, end int) error {
-	if start < 1 || start > 65535 || end < 1 || end > 65535 {
-		return fmt.Errorf("端口必须在1-65535范围内")
-	}
-	if end < start {
-		return fmt.Errorf("结束端口不能小于起始端口")
-	}
-	return nil
 }
 
 func (s *NodeService) syncNodeProtocolIfNeeded(node *model.Node, req dto.NodeUpdateDto) error {

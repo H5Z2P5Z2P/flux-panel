@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go-backend/global"
@@ -102,9 +103,28 @@ func (s *TunnelService) CreateTunnel(dto dto.TunnelDto) *result.Result {
 	tunnel.CreatedTime = time.Now().UnixMilli()
 	tunnel.UpdatedTime = time.Now().UnixMilli()
 
+	// Type 2 隧道：分配共享出口端口
+	if dto.Type == 2 {
+		outPort, err := s.allocateTunnelOutPort(tunnel.OutNodeId, nil)
+		if err != nil {
+			return result.Err(-1, "出口端口分配失败: "+err.Error())
+		}
+		tunnel.OutPort = outPort
+	}
+
 	if err := global.DB.Create(&tunnel).Error; err != nil {
 		return result.Err(-1, "隧道创建失败: "+err.Error())
 	}
+
+	// Type 2 隧道：创建共享 chain 和 relay service
+	if tunnel.Type == 2 {
+		if err := s.createTunnelSharedServices(&tunnel); err != nil {
+			// 回滚：删除数据库记录
+			global.DB.Delete(&tunnel)
+			return result.Err(-1, "共享服务创建失败: "+err.Error())
+		}
+	}
+
 	return result.Ok("隧道创建成功")
 }
 
@@ -144,13 +164,12 @@ func (s *TunnelService) UserTunnel(userId int64) *result.Result {
 		}
 
 		dto := dto.UserTunnelResponseDto{
-			ID:            tunnel.ID,
-			Name:          tunnel.Name,
-			Ip:            tunnel.InIp, // Or node.Ip? Java response uses "ip": "45.8..." which matches InIp usually
-			Type:          tunnel.Type,
-			Protocol:      tunnel.Protocol,
-			InNodePortSta: node.PortSta,
-			InNodePortEnd: node.PortEnd,
+			ID:               tunnel.ID,
+			Name:             tunnel.Name,
+			Ip:               tunnel.InIp,
+			Type:             tunnel.Type,
+			Protocol:         tunnel.Protocol,
+			InNodePortRanges: node.PortRanges,
 		}
 		response = append(response, dto)
 	}
@@ -331,7 +350,11 @@ func (s *TunnelService) getOutNodeTcpPort(tunnelId int64) int {
 }
 
 func (s *TunnelService) DeleteTunnel(id int64) *result.Result {
-	// ... (Existing implementation) ...
+	var tunnel model.Tunnel
+	if err := global.DB.First(&tunnel, id).Error; err != nil {
+		return result.Err(-1, "隧道不存在")
+	}
+
 	if count := Forward.CountForwardsByTunnelId(id); count > 0 {
 		return result.Err(-1, fmt.Sprintf("该隧道还有 %d 个转发在使用，请先删除相关转发", count))
 	}
@@ -339,8 +362,122 @@ func (s *TunnelService) DeleteTunnel(id int64) *result.Result {
 		return result.Err(-1, fmt.Sprintf("该隧道还有 %d 个用户权限关联，请先取消用户权限分配", count))
 	}
 
+	// Type 2 隧道：删除共享服务
+	if tunnel.Type == 2 {
+		s.deleteTunnelSharedServices(&tunnel)
+	}
+
 	if err := global.DB.Delete(&model.Tunnel{}, id).Error; err != nil {
 		return result.Err(-1, "隧道删除失败")
 	}
 	return result.Ok("隧道删除成功")
+}
+
+// --- Tunnel Type 2 共享服务管理 ---
+
+// allocateTunnelOutPort 为 Type 2 隧道分配出口节点端口
+func (s *TunnelService) allocateTunnelOutPort(outNodeId int64, excludeTunnelId *int64) (int, error) {
+	var node model.Node
+	if err := global.DB.First(&node, outNodeId).Error; err != nil {
+		return 0, fmt.Errorf("出口节点不存在")
+	}
+
+	// 解析端口范围
+	ranges, err := utils.ParsePortRanges(node.PortRanges)
+	if err != nil {
+		return 0, fmt.Errorf("出口节点端口配置错误: %s", err.Error())
+	}
+	allPorts := utils.GetAllPorts(ranges)
+	used := s.getUsedTunnelOutPorts(outNodeId, excludeTunnelId)
+
+	for _, p := range allPorts {
+		if !used[p] {
+			return p, nil
+		}
+	}
+	return 0, fmt.Errorf("出口节点无可用端口")
+}
+
+// getUsedTunnelOutPorts 获取出口节点已被 tunnel 占用的端口
+func (s *TunnelService) getUsedTunnelOutPorts(outNodeId int64, excludeTunnelId *int64) map[int]bool {
+	used := make(map[int]bool)
+
+	// 查找所有使用该节点作为出口的 Type 2 隧道
+	var tunnels []model.Tunnel
+	query := global.DB.Where("out_node_id = ? AND type = 2", outNodeId)
+	if excludeTunnelId != nil {
+		query = query.Where("id != ?", *excludeTunnelId)
+	}
+	query.Find(&tunnels)
+
+	for _, t := range tunnels {
+		if t.OutPort != 0 {
+			used[t.OutPort] = true
+		}
+	}
+
+	// 同时检查 forward 使用的端口（兼容旧数据）
+	var forwardOutPorts []int
+	global.DB.Model(&model.Forward{}).
+		Joins("JOIN tunnel ON forward.tunnel_id = tunnel.id").
+		Where("tunnel.out_node_id = ?", outNodeId).
+		Pluck("forward.out_port", &forwardOutPorts)
+	for _, p := range forwardOutPorts {
+		if p != 0 {
+			used[p] = true
+		}
+	}
+
+	return used
+}
+
+// createTunnelSharedServices 为 Type 2 隧道创建共享的 chain 和 relay service
+func (s *TunnelService) createTunnelSharedServices(tunnel *model.Tunnel) error {
+	// 获取入口和出口节点
+	var inNode, outNode model.Node
+	if err := global.DB.First(&inNode, tunnel.InNodeId).Error; err != nil {
+		return fmt.Errorf("入口节点不存在")
+	}
+	if err := global.DB.First(&outNode, tunnel.OutNodeId).Error; err != nil {
+		return fmt.Errorf("出口节点不存在")
+	}
+
+	// 构建出口节点远程地址
+	remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, tunnel.OutPort)
+	if strings.Contains(tunnel.OutIp, ":") {
+		remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, tunnel.OutPort)
+	}
+
+	// 1. 在入口节点创建共享 chain
+	if res := utils.AddTunnelChain(inNode.ID, tunnel.ID, remoteAddr, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
+		return fmt.Errorf("创建共享 Chain 失败: %s", res.Msg)
+	}
+
+	// 2. 在出口节点创建共享 relay service
+	if res := utils.AddTunnelRelayService(outNode.ID, tunnel.ID, tunnel.OutPort, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
+		// 回滚：删除已创建的 chain
+		utils.DeleteTunnelChain(inNode.ID, tunnel.ID)
+		return fmt.Errorf("创建共享 Relay Service 失败: %s", res.Msg)
+	}
+
+	return nil
+}
+
+// deleteTunnelSharedServices 删除 Type 2 隧道的共享 chain 和 relay service
+func (s *TunnelService) deleteTunnelSharedServices(tunnel *model.Tunnel) error {
+	var inNode, outNode model.Node
+	global.DB.First(&inNode, tunnel.InNodeId)
+	global.DB.First(&outNode, tunnel.OutNodeId)
+
+	// 删除入口节点的共享 chain
+	if inNode.ID != 0 {
+		utils.DeleteTunnelChain(inNode.ID, tunnel.ID)
+	}
+
+	// 删除出口节点的共享 relay service
+	if outNode.ID != 0 {
+		utils.DeleteTunnelRelayService(outNode.ID, tunnel.ID)
+	}
+
+	return nil
 }

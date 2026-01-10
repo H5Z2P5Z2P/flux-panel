@@ -10,8 +10,7 @@ type Node struct {
 	Ip          string  `json:"ip"`
 	ServerIp    string  `json:"serverIp"`
 	Version     *string `json:"version"`
-	PortSta     int     `json:"portSta"`
-	PortEnd     int     `json:"portEnd"`
+	PortRanges  string  `json:"portRanges"` // 格式: "1080,1090,2080-3080"
 	Http        int     `json:"http"`
 	Tls         int     `json:"tls"`
 	Socks       int     `json:"socks"`

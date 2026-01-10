@@ -17,6 +17,7 @@ type Tunnel struct {
 	TcpListenAddr string  `json:"tcpListenAddr"`
 	UdpListenAddr string  `json:"udpListenAddr"`
 	InterfaceName string  `json:"interfaceName"`
+	OutPort       int     `json:"outPort"` // 隧道共享出口端口 (Type 2)
 }
 
 func (Tunnel) TableName() string {

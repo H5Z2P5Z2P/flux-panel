@@ -5,6 +5,7 @@ import (
 
 	"go-backend/config"
 	"go-backend/global"
+	"go-backend/migration"
 	"go-backend/model"
 	"go-backend/router"
 	"go-backend/service"
@@ -38,6 +39,12 @@ func main() {
 		)
 		if err != nil {
 			fmt.Printf("❌ AutoMigrate failed: %v\n", err)
+		}
+
+		// 运行数据迁移
+		fmt.Println("⚙️ Running Migrations...")
+		if err := migration.RunMigrations(global.DB); err != nil {
+			fmt.Printf("❌ Migration failed: %v\n", err)
 		}
 
 		// Seed Admin User
