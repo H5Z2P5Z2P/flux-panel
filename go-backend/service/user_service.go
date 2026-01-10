@@ -540,7 +540,7 @@ func (s *UserService) deleteUserRelatedData(user *model.User) error {
 		if err := global.DB.First(&tunnel, forward.TunnelId).Error; err == nil {
 			var userTunnel model.UserTunnel
 			global.DB.Where("user_id = ? AND tunnel_id = ?", forward.UserId, forward.TunnelId).First(&userTunnel)
-			if err := Forward.deleteGostServices(&forward, &tunnel, &userTunnel); err != nil {
+			if err := Forward.DeleteGostServices(&forward, &tunnel, &userTunnel); err != nil {
 				// 记录错误但不阻断删除
 			}
 		}

@@ -145,14 +145,15 @@ func buildTunnelServiceName(tunnelId int64) string {
 }
 
 // AddTunnelChain 创建 tunnel 级别的共享 chain（在入口节点）
-func AddTunnelChain(nodeId int64, tunnelId int64, remoteAddr, protocol, interfaceName string) *dto.GostDto {
-	data := createTunnelChainConfig(tunnelId, remoteAddr, protocol, interfaceName)
+func AddTunnelChain(nodeId int64, tunnelId int64, nodes []dto.TunnelNodeInfo) *dto.GostDto {
+	// nodes 应该包含所有中继和出口节点，按顺序排列
+	data := createTunnelChainConfig(tunnelId, nodes)
 	return websocket.SendMsg(nodeId, data, "AddChains")
 }
 
 // UpdateTunnelChain 更新 tunnel 级别的共享 chain
-func UpdateTunnelChain(nodeId int64, tunnelId int64, remoteAddr, protocol, interfaceName string) *dto.GostDto {
-	data := createTunnelChainConfig(tunnelId, remoteAddr, protocol, interfaceName)
+func UpdateTunnelChain(nodeId int64, tunnelId int64, nodes []dto.TunnelNodeInfo) *dto.GostDto {
+	data := createTunnelChainConfig(tunnelId, nodes)
 	req := map[string]interface{}{
 		"chain": BuildTunnelChainName(tunnelId),
 		"data":  data,
@@ -190,36 +191,46 @@ func DeleteTunnelRelayService(nodeId int64, tunnelId int64) *dto.GostDto {
 	return websocket.SendMsg(nodeId, req, "DeleteService")
 }
 
-// createTunnelChainConfig 创建 tunnel 级别 chain 配置
-func createTunnelChainConfig(tunnelId int64, remoteAddr, protocol, interfaceName string) map[string]interface{} {
-	dialer := map[string]interface{}{"type": protocol}
-	if protocol == "quic" {
-		dialer["metadata"] = map[string]interface{}{
-			"keepAlive": true,
-			"ttl":       "10s",
+// createTunnelChainConfig 创建多级 Hops 的 tunnel 级别 chain 配置
+func createTunnelChainConfig(tunnelId int64, nodes []dto.TunnelNodeInfo) map[string]interface{} {
+	hops := make([]map[string]interface{}, 0)
+
+	for _, n := range nodes {
+		// 只有中继(2)和出口(3)节点会出现在 chain 的 hops 中
+		if n.Type == 1 {
+			continue
 		}
-	}
 
-	connector := map[string]interface{}{"type": "relay"}
+		dialer := map[string]interface{}{"type": n.Protocol}
+		if n.Protocol == "quic" {
+			dialer["metadata"] = map[string]interface{}{
+				"keepAlive": true,
+				"ttl":       "10s",
+			}
+		}
 
-	node := map[string]interface{}{
-		"name":      fmt.Sprintf("tunnel-%d-node", tunnelId),
-		"addr":      remoteAddr,
-		"connector": connector,
-		"dialer":    dialer,
-	}
-	if interfaceName != "" {
-		node["interface"] = interfaceName
-	}
+		connector := map[string]interface{}{"type": "relay"}
 
-	hop := map[string]interface{}{
-		"name":  fmt.Sprintf("tunnel-%d-hop", tunnelId),
-		"nodes": []map[string]interface{}{node},
+		gostNode := map[string]interface{}{
+			"name":      fmt.Sprintf("tunnel-%d-node-%d", tunnelId, n.Inx),
+			"addr":      n.Addr, // 使用由 Service 层解析好的 ServerIp:Port
+			"connector": connector,
+			"dialer":    dialer,
+		}
+		if n.InterfaceName != "" {
+			gostNode["interface"] = n.InterfaceName
+		}
+
+		hop := map[string]interface{}{
+			"name":  fmt.Sprintf("tunnel-%d-hop-%d", tunnelId, n.Inx),
+			"nodes": []map[string]interface{}{gostNode},
+		}
+		hops = append(hops, hop)
 	}
 
 	return map[string]interface{}{
 		"name": BuildTunnelChainName(tunnelId),
-		"hops": []map[string]interface{}{hop},
+		"hops": hops,
 	}
 }
 

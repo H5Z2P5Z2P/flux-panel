@@ -235,7 +235,7 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 		if oldTunnel.InNodeId == tunnel.InNodeId {
 			// 入口节点相同：必须先删后创（否则监听同一端口会冲突）
 			// 风险：如果新服务创建失败，需要尝试恢复旧服务
-			s.deleteGostServices(&forward, &oldTunnel, &oldUT)
+			s.DeleteGostServices(&forward, &oldTunnel, &oldUT)
 
 			if err := s.createGostServices(&updatedForward, &tunnel, limiter, userTunnel); err != nil {
 				// 创建失败，尝试恢复旧服务
@@ -255,7 +255,7 @@ func (s *ForwardService) UpdateForward(id int64, dto dto.ForwardDto, ctxUser *ut
 				return result.Err(-1, "新隧道服务创建失败: "+err.Error())
 			}
 			// 新服务创建成功后，删除旧服务（删除失败不致命）
-			s.deleteGostServices(&forward, &oldTunnel, &oldUT)
+			s.DeleteGostServices(&forward, &oldTunnel, &oldUT)
 		}
 	} else {
 		// Update Same Tunnel
@@ -303,7 +303,7 @@ func (s *ForwardService) DeleteForward(id int64, ctxUser *utils.UserClaims) *res
 	global.DB.Where("user_id = ? AND tunnel_id = ?", forward.UserId, tunnel.ID).First(&userTunnel)
 
 	// Delete Gost Service
-	if err := s.deleteGostServices(&forward, &tunnel, &userTunnel); err != nil {
+	if err := s.DeleteGostServices(&forward, &tunnel, &userTunnel); err != nil {
 		return result.Err(-1, "Gost服务删除失败: "+err.Error())
 	}
 
@@ -320,13 +320,19 @@ func (s *ForwardService) GetAllForwards(ctxUser *utils.UserClaims) *result.Resul
 
 	var response []dto.ForwardResponseDto
 	for _, f := range forwards {
-		// Fetch Tunnel info
+		// 获取入口节点 (inx=0)
 		var tunnel model.Tunnel
+		var entryTN model.TunnelNode
 		var inIp string
 		var tunnelName string
 		if err := global.DB.First(&tunnel, f.TunnelId).Error; err == nil {
 			tunnelName = tunnel.Name
-			inIp = tunnel.InIp
+			if global.DB.Where("tunnel_id = ? AND inx = 0", tunnel.ID).First(&entryTN).Error == nil {
+				var node model.Node
+				if global.DB.First(&node, entryTN.NodeId).Error == nil {
+					inIp = node.ServerIp
+				}
+			}
 		}
 
 		resDto := dto.ForwardResponseDto{
@@ -403,7 +409,7 @@ func (s *ForwardService) updateGostServices(forward *model.Forward, tunnel *mode
 	return nil
 }
 
-func (s *ForwardService) deleteGostServices(forward *model.Forward, tunnel *model.Tunnel, userTunnel *model.UserTunnel) error {
+func (s *ForwardService) DeleteGostServices(forward *model.Forward, tunnel *model.Tunnel, userTunnel *model.UserTunnel) error {
 	serviceName := s.buildServiceName(forward.ID, forward.UserId, userTunnel)
 	inNode, _, _ := s.getRequiredNodes(tunnel)
 
@@ -537,17 +543,30 @@ func (s *ForwardService) isPortUsed(nodeId int64, port int, excludeForwardId *in
 }
 
 func (s *ForwardService) getRequiredNodes(tunnel *model.Tunnel) (*model.Node, *model.Node, error) {
-	var inNode model.Node
-	if err := global.DB.First(&inNode, tunnel.InNodeId).Error; err != nil {
-		return nil, nil, fmt.Errorf("入口节点不存在")
+	// 获取入口节点 (inx=0)
+	var entryTN model.TunnelNode
+	if err := global.DB.Where("tunnel_id = ? AND inx = 0", tunnel.ID).First(&entryTN).Error; err != nil {
+		return nil, nil, fmt.Errorf("入口节点映射不存在")
 	}
+
+	var inNode model.Node
+	if err := global.DB.First(&inNode, entryTN.NodeId).Error; err != nil {
+		return nil, nil, fmt.Errorf("物理入口节点不存在")
+	}
+
 	var outNode *model.Node
 	if tunnel.Type == 2 {
-		var node model.Node
-		if err := global.DB.First(&node, tunnel.OutNodeId).Error; err != nil {
-			return nil, nil, fmt.Errorf("出口节点不存在")
+		// 修改：出口节点是 inx 最大的节点
+		var exitTN model.TunnelNode
+		if err := global.DB.Where("tunnel_id = ?", tunnel.ID).Order("inx desc").First(&exitTN).Error; err == nil {
+			var node model.Node
+			if global.DB.First(&node, exitTN.NodeId).Error == nil {
+				outNode = &node
+			}
 		}
-		outNode = &node
+		if outNode == nil {
+			return nil, nil, fmt.Errorf("物理出口节点不存在")
+		}
 	}
 	return &inNode, outNode, nil
 }
@@ -739,15 +758,20 @@ func (s *ForwardService) ResumeForward(id int64, ctxUser *utils.UserClaims) *res
 	serviceName := s.buildServiceName(forward.ID, forward.UserId, &userTunnel)
 
 	// Resume入口服务
-	if res := utils.ResumeService(tunnel.InNodeId, serviceName); res.Msg != "OK" {
+	inNode, outNode, err := s.getRequiredNodes(&tunnel)
+	if err != nil {
+		return result.Err(-1, err.Error())
+	}
+
+	if res := utils.ResumeService(inNode.ID, serviceName); res.Msg != "OK" {
 		return result.Err(-1, "恢复服务失败: "+res.Msg)
 	}
 
 	// 如果是隧道转发，恢复远程服务
-	if tunnel.Type == 2 {
-		if res := utils.ResumeRemoteService(tunnel.OutNodeId, serviceName); res.Msg != "OK" {
+	if tunnel.Type == 2 && outNode != nil {
+		if res := utils.ResumeRemoteService(outNode.ID, serviceName); res.Msg != "OK" {
 			// 回滚：暂停已恢复的入口服务
-			utils.PauseService(tunnel.InNodeId, serviceName)
+			utils.PauseService(inNode.ID, serviceName)
 			return result.Err(-1, "恢复远程服务失败: "+res.Msg)
 		}
 	}

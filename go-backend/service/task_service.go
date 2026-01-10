@@ -79,7 +79,7 @@ func (s *TaskService) CheckExpiry() {
 
 func (s *TaskService) pauseForward(forward *model.Forward) {
 	var tunnel model.Tunnel
-	if err := global.DB.First(&tunnel, forward.TunnelId).Error; err != nil {
+	if err := global.DB.Preload("Nodes").First(&tunnel, forward.TunnelId).Error; err != nil {
 		return
 	}
 
@@ -91,11 +91,17 @@ func (s *TaskService) pauseForward(forward *model.Forward) {
 
 	serviceName := fmt.Sprintf("%d_%d_%d", forward.ID, forward.UserId, userTunnel.ID)
 
+	// 获取物理节点
+	inNode, outNode, err := Forward.getRequiredNodes(&tunnel)
+	if err != nil {
+		return
+	}
+
 	// Pause Service on InNode
-	utils.PauseService(tunnel.InNodeId, serviceName)
+	utils.PauseService(inNode.ID, serviceName)
 
 	// Pause Remote Service if Type 2
-	if tunnel.Type == 2 && tunnel.OutNodeId != 0 {
-		utils.PauseRemoteService(tunnel.OutNodeId, serviceName)
+	if tunnel.Type == 2 && outNode != nil {
+		utils.PauseRemoteService(outNode.ID, serviceName)
 	}
 }
