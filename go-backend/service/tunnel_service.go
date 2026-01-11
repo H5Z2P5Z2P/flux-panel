@@ -221,6 +221,13 @@ func (s *TunnelService) UpdateTunnel(req dto.TunnelUpdateDto) *result.Result {
 		return result.Err(-1, "隧道更新失败: "+err.Error())
 	}
 
+	// 如果是 Type 2 隧道且有关键变更，先更新共享服务
+	if tunnel.Type == 2 && criticalChange {
+		if err := s.updateTunnelSharedServices(&tunnel); err != nil {
+			return result.Err(-1, "更新隧道共享服务失败: "+err.Error())
+		}
+	}
+
 	// Sync Forwards if needed
 	if criticalChange {
 		var forwards []model.Forward
@@ -472,6 +479,35 @@ func (s *TunnelService) deleteTunnelSharedServices(tunnel *model.Tunnel) error {
 	// 删除出口节点的共享 relay service
 	if outNode.ID != 0 {
 		utils.DeleteTunnelRelayService(outNode.ID, tunnel.ID)
+	}
+
+	return nil
+}
+
+// updateTunnelSharedServices 更新 Type 2 隧道的共享服务配置
+func (s *TunnelService) updateTunnelSharedServices(tunnel *model.Tunnel) error {
+	var inNode, outNode model.Node
+	if err := global.DB.First(&inNode, tunnel.InNodeId).Error; err != nil {
+		return fmt.Errorf("入口节点不存在")
+	}
+	if err := global.DB.First(&outNode, tunnel.OutNodeId).Error; err != nil {
+		return fmt.Errorf("出口节点不存在")
+	}
+
+	// 构建远程地址
+	remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, tunnel.OutPort)
+	if strings.Contains(tunnel.OutIp, ":") {
+		remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, tunnel.OutPort)
+	}
+
+	// 1. 更新入口节点的共享 chain
+	if res := utils.UpdateTunnelChain(inNode.ID, tunnel.ID, remoteAddr, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
+		return fmt.Errorf("更新共享 Chain 失败: %s", res.Msg)
+	}
+
+	// 2. 更新出口节点的共享 relay service
+	if res := utils.UpdateTunnelRelayService(outNode.ID, tunnel.ID, tunnel.OutPort, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
+		return fmt.Errorf("更新共享 Relay Service 失败: %s", res.Msg)
 	}
 
 	return nil

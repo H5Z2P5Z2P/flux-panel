@@ -658,19 +658,13 @@ func (s *ForwardService) PauseForward(id int64, ctxUser *utils.UserClaims) *resu
 
 	serviceName := s.buildServiceName(forward.ID, forward.UserId, &userTunnel)
 
-	// Pause入口服务
+	// 暂停入口服务（Type 1 和 Type 2 都需要）
 	if res := utils.PauseService(tunnel.InNodeId, serviceName); res.Msg != "OK" {
 		return result.Err(-1, "暂停服务失败: "+res.Msg)
 	}
 
-	// 如果是隧道转发，暂停远程服务
-	if tunnel.Type == 2 {
-		if res := utils.PauseRemoteService(tunnel.OutNodeId, serviceName); res.Msg != "OK" {
-			// 回滚：恢复已暂停的入口服务
-			utils.ResumeService(tunnel.InNodeId, serviceName)
-			return result.Err(-1, "暂停远程服务失败: "+res.Msg)
-		}
-	}
+	// Type 2 隧道不再需要暂停远程服务
+	// 共享的 relay service 由 tunnel 管理，forward 暂停不影响它
 
 	// 更新状态
 	forward.Status = 0
@@ -738,19 +732,13 @@ func (s *ForwardService) ResumeForward(id int64, ctxUser *utils.UserClaims) *res
 
 	serviceName := s.buildServiceName(forward.ID, forward.UserId, &userTunnel)
 
-	// Resume入口服务
+	// 恢复入口服务（Type 1 和 Type 2 都需要）
 	if res := utils.ResumeService(tunnel.InNodeId, serviceName); res.Msg != "OK" {
 		return result.Err(-1, "恢复服务失败: "+res.Msg)
 	}
 
-	// 如果是隧道转发，恢复远程服务
-	if tunnel.Type == 2 {
-		if res := utils.ResumeRemoteService(tunnel.OutNodeId, serviceName); res.Msg != "OK" {
-			// 回滚：暂停已恢复的入口服务
-			utils.PauseService(tunnel.InNodeId, serviceName)
-			return result.Err(-1, "恢复远程服务失败: "+res.Msg)
-		}
-	}
+	// Type 2 隧道不再需要恢复远程服务
+	// 共享的 relay service 由 tunnel 管理
 
 	// 更新状态
 	forward.Status = 1
