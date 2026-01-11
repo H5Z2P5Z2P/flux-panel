@@ -400,11 +400,11 @@ func (s *TunnelService) allocateTunnelOutPort(outNodeId int64, excludeTunnelId *
 	return 0, fmt.Errorf("出口节点无可用端口")
 }
 
-// getUsedTunnelOutPorts 获取出口节点已被 tunnel 占用的端口
+// getUsedTunnelOutPorts 获取出口节点已被占用的所有端口
 func (s *TunnelService) getUsedTunnelOutPorts(outNodeId int64, excludeTunnelId *int64) map[int]bool {
 	used := make(map[int]bool)
 
-	// 查找所有使用该节点作为出口的 Type 2 隧道
+	// 1. Type 2 隧道的共享 relay service 端口
 	var tunnels []model.Tunnel
 	query := global.DB.Where("out_node_id = ? AND type = 2", outNodeId)
 	if excludeTunnelId != nil {
@@ -418,7 +418,7 @@ func (s *TunnelService) getUsedTunnelOutPorts(outNodeId int64, excludeTunnelId *
 		}
 	}
 
-	// 同时检查 forward 使用的端口（兼容旧数据）
+	// 2. Forward 使用的出口端口（包括旧数据和 Type 1 转发）
 	var forwardOutPorts []int
 	global.DB.Model(&model.Forward{}).
 		Joins("JOIN tunnel ON forward.tunnel_id = tunnel.id").

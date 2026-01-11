@@ -528,6 +528,16 @@ func (s *ForwardService) getUsedPorts(nodeId int64, excludeForwardId *int64) map
 			}
 		}
 	}
+
+	// 3. Type 2 Tunnels 的共享 relay service 端口（出口节点）
+	var type2Tunnels []model.Tunnel
+	global.DB.Where("out_node_id = ? AND type = 2", nodeId).Find(&type2Tunnels)
+	for _, t := range type2Tunnels {
+		if t.OutPort != 0 {
+			used[t.OutPort] = true
+		}
+	}
+
 	return used
 }
 
