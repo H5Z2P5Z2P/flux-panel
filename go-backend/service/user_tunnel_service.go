@@ -23,12 +23,22 @@ func (s *UserTunnelService) AssignUserTunnel(userTunnelDto dto.UserTunnelDto) *r
 		return result.Err(-1, "该用户已拥有此隧道权限")
 	}
 
-	// 创建权限记录
+	// 获取用户信息以继承流量限制属性
+	var user model.User
+	if err := global.DB.First(&user, userTunnelDto.UserId).Error; err != nil {
+		return result.Err(-1, "用户不存在")
+	}
+
+	// 创建权限记录，继承用户的流量限制属性
 	userTunnel := model.UserTunnel{
-		UserId:   int(userTunnelDto.UserId),
-		TunnelId: int(userTunnelDto.TunnelId),
-		SpeedId:  userTunnelDto.SpeedId,
-		Status:   1, // 默认启用
+		UserId:        int(userTunnelDto.UserId),
+		TunnelId:      int(userTunnelDto.TunnelId),
+		SpeedId:       userTunnelDto.SpeedId,
+		Status:        1, // 默认启用
+		Flow:          user.Flow,
+		FlowResetTime: user.FlowResetTime,
+		ExpTime:       user.ExpTime,
+		Num:           user.Num,
 	}
 
 	if err := global.DB.Create(&userTunnel).Error; err != nil {

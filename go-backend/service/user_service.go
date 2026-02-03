@@ -306,6 +306,14 @@ func (s *UserService) ResetFlow(req dto.ResetFlowDto) *result.Result {
 			return result.Err(-1, "重置失败")
 		}
 
+		// 同步重置该用户所有授权隧道的流量
+		global.DB.Model(&model.UserTunnel{}).
+			Where("user_id = ?", user.ID).
+			Updates(map[string]interface{}{
+				"in_flow":  0,
+				"out_flow": 0,
+			})
+
 		// Auto-resume services if user is active and not expired
 		if user.Status == 1 && (user.ExpTime == 0 || user.ExpTime > time.Now().UnixMilli()) {
 			s.resumeUserServices(user.ID, 0)
