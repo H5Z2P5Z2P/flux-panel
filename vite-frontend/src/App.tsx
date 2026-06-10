@@ -18,7 +18,7 @@ import AdminLayout from "@/layouts/admin";
 import H5Layout from "@/layouts/h5";
 import H5SimpleLayout from "@/layouts/h5-simple";
 
-import { isLoggedIn } from "@/utils/auth";
+import { isAdmin as isCurrentUserAdmin, isLoggedIn } from "@/utils/auth";
 import { siteConfig } from "@/config/site";
 
 // 检测是否为H5模式
@@ -60,8 +60,9 @@ const useH5Mode = () => {
 };
 
 // 简化的路由保护组件 - 使用 React Router 导航避免循环
-const ProtectedRoute = ({ children, useSimpleLayout = false, skipLayout = false }: { children: React.ReactNode, useSimpleLayout?: boolean, skipLayout?: boolean }) => {
+const ProtectedRoute = ({ children, useSimpleLayout = false, skipLayout = false, adminOnly = false }: { children: React.ReactNode, useSimpleLayout?: boolean, skipLayout?: boolean, adminOnly?: boolean }) => {
   const authenticated = isLoggedIn();
+  const authorized = !adminOnly || isCurrentUserAdmin();
   const isH5 = useH5Mode();
   const navigate = useNavigate();
 
@@ -69,10 +70,22 @@ const ProtectedRoute = ({ children, useSimpleLayout = false, skipLayout = false 
     if (!authenticated) {
       // 使用 React Router 导航，避免无限跳转
       navigate('/', { replace: true });
+      return;
     }
-  }, [authenticated, navigate]);
+    if (!authorized) {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [authenticated, authorized, navigate]);
 
   if (!authenticated) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-white dark:bg-black">
+        <div className="text-lg text-gray-700 dark:text-gray-200"></div>
+      </div>
+    );
+  }
+
+  if (!authorized) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-white dark:bg-black">
         <div className="text-lg text-gray-700 dark:text-gray-200"></div>
@@ -177,7 +190,7 @@ function App() {
       <Route
         path="/tunnel"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute adminOnly>
             <TunnelPage />
           </ProtectedRoute>
         }
@@ -185,7 +198,7 @@ function App() {
       <Route
         path="/node"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute adminOnly>
             <NodePage />
           </ProtectedRoute>
         }
@@ -193,7 +206,7 @@ function App() {
       <Route
         path="/user"
         element={
-          <ProtectedRoute useSimpleLayout={true}>
+          <ProtectedRoute useSimpleLayout={true} adminOnly>
             <UserPage />
           </ProtectedRoute>
         }
@@ -209,7 +222,7 @@ function App() {
       <Route
         path="/limit"
         element={
-          <ProtectedRoute useSimpleLayout={true}>
+          <ProtectedRoute useSimpleLayout={true} adminOnly>
             <LimitPage />
           </ProtectedRoute>
         }
@@ -217,7 +230,7 @@ function App() {
       <Route
         path="/config"
         element={
-          <ProtectedRoute useSimpleLayout={true}>
+          <ProtectedRoute useSimpleLayout={true} adminOnly>
             <ConfigPage />
           </ProtectedRoute>
         }

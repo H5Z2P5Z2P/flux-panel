@@ -12,8 +12,6 @@ import (
 	"go-backend/utils"
 
 	"go-backend/websocket"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 type TunnelService struct{}
@@ -41,9 +39,6 @@ func (s *TunnelService) CreateTunnel(dto dto.TunnelDto) *result.Result {
 	var inNode model.Node
 	if err := global.DB.First(&inNode, dto.InNodeId).Error; err != nil {
 		return result.Err(-1, "入口节点不存在")
-	}
-	if inNode.Status != 1 {
-		return result.Err(-1, "入口节点当前离线，请确保节点正常运行")
 	}
 
 	tunnel := model.Tunnel{
@@ -91,9 +86,6 @@ func (s *TunnelService) CreateTunnel(dto dto.TunnelDto) *result.Result {
 		if err := global.DB.First(&outNode, *dto.OutNodeId).Error; err != nil {
 			return result.Err(-1, "出口节点不存在")
 		}
-		if outNode.Status != 1 {
-			return result.Err(-1, "出口节点当前离线，请确保节点正常运行")
-		}
 		tunnel.OutNodeId = *dto.OutNodeId
 		tunnel.OutIp = outNode.ServerIp
 	}
@@ -119,6 +111,9 @@ func (s *TunnelService) CreateTunnel(dto dto.TunnelDto) *result.Result {
 	// Type 2 隧道：创建共享 chain 和 relay service
 	if tunnel.Type == 2 {
 		if err := s.createTunnelSharedServices(&tunnel); err != nil {
+			if isTransientNodeSyncError(err) {
+				return result.OkMsg("隧道创建成功，节点恢复后将自动同步")
+			}
 			// 回滚：删除数据库记录
 			global.DB.Delete(&tunnel)
 			return result.Err(-1, "共享服务创建失败: "+err.Error())
@@ -188,6 +183,7 @@ func (s *TunnelService) UpdateTunnel(req dto.TunnelUpdateDto) *result.Result {
 	if err := global.DB.First(&tunnel, req.ID).Error; err != nil {
 		return result.Err(-1, "隧道不存在")
 	}
+	oldTunnel := tunnel
 
 	var count int64
 	global.DB.Model(&model.Tunnel{}).Where("name = ? AND id != ?", req.Name, req.ID).Count(&count)
@@ -195,14 +191,63 @@ func (s *TunnelService) UpdateTunnel(req dto.TunnelUpdateDto) *result.Result {
 		return result.Err(-1, "隧道名称已存在")
 	}
 
-	// Check for critical changes
-	criticalChange := false
-	if tunnel.TcpListenAddr != req.TcpListenAddr ||
+	newInNodeId := tunnel.InNodeId
+	if req.InNodeId != nil {
+		newInNodeId = *req.InNodeId
+	}
+	var inNode model.Node
+	if err := global.DB.First(&inNode, newInNodeId).Error; err != nil {
+		return result.Err(-1, "入口节点不存在")
+	}
+
+	newOutNodeId := tunnel.OutNodeId
+	var outNode model.Node
+	if tunnel.Type == 1 {
+		newOutNodeId = newInNodeId
+		outNode = inNode
+	} else {
+		if req.OutNodeId != nil {
+			newOutNodeId = *req.OutNodeId
+		}
+		if newOutNodeId == 0 {
+			return result.Err(-1, "出口节点不能为空")
+		}
+		if newInNodeId == newOutNodeId {
+			return result.Err(-1, "隧道转发模式下，入口和出口不能是同一个节点")
+		}
+		if err := global.DB.First(&outNode, newOutNodeId).Error; err != nil {
+			return result.Err(-1, "出口节点不存在")
+		}
+	}
+
+	inNodeChanged := oldTunnel.InNodeId != newInNodeId
+	outNodeChanged := oldTunnel.OutNodeId != newOutNodeId
+
+	newOutPort := tunnel.OutPort
+	if tunnel.Type == 2 && outNodeChanged {
+		outPort, err := s.allocateTunnelOutPort(newOutNodeId, &tunnel.ID)
+		if err != nil {
+			return result.Err(-1, "出口端口分配失败: "+err.Error())
+		}
+		newOutPort = outPort
+	}
+
+	if inNodeChanged {
+		var forwards []model.Forward
+		global.DB.Where("tunnel_id = ? AND status = ?", tunnel.ID, 1).Find(&forwards)
+		for _, forward := range forwards {
+			if err := Forward.checkPortAvailable(newInNodeId, forward.InPort, &forward.ID); err != nil {
+				return result.Err(-1, fmt.Sprintf("入口节点切换失败，转发 %s 的端口 %d 不可用: %s", forward.Name, forward.InPort, err.Error()))
+			}
+		}
+	}
+
+	criticalChange := inNodeChanged || outNodeChanged ||
+		tunnel.TcpListenAddr != req.TcpListenAddr ||
 		tunnel.UdpListenAddr != req.UdpListenAddr ||
 		tunnel.Protocol != req.Protocol ||
-		tunnel.InterfaceName != req.InterfaceName {
-		criticalChange = true
-	}
+		tunnel.InterfaceName != req.InterfaceName ||
+		tunnel.OutPort != newOutPort
 
 	tunnel.Name = req.Name
 	tunnel.Flow = req.Flow
@@ -210,21 +255,37 @@ func (s *TunnelService) UpdateTunnel(req dto.TunnelUpdateDto) *result.Result {
 	tunnel.InterfaceName = req.InterfaceName
 	tunnel.TcpListenAddr = req.TcpListenAddr
 	tunnel.UdpListenAddr = req.UdpListenAddr
+	tunnel.InNodeId = newInNodeId
+	tunnel.InIp = inNode.Ip
+	tunnel.OutNodeId = newOutNodeId
+	tunnel.OutIp = outNode.ServerIp
+	tunnel.OutPort = newOutPort
 	if !req.TrafficRatio.IsZero() {
 		f, _ := req.TrafficRatio.Float64()
 		tunnel.TrafficRatio = f
 	}
 	tunnel.UpdatedTime = time.Now().UnixMilli()
 
-	// Update DB
-	if err := global.DB.Save(&tunnel).Error; err != nil {
-		return result.Err(-1, "隧道更新失败: "+err.Error())
-	}
-
 	// 如果是 Type 2 隧道且有关键变更，先更新共享服务
+	syncDeferred := false
 	if tunnel.Type == 2 && criticalChange {
-		if err := s.updateTunnelSharedServices(&tunnel); err != nil {
-			return result.Err(-1, "更新隧道共享服务失败: "+err.Error())
+		if err := s.syncTunnelSharedServicesAfterUpdate(&oldTunnel, &tunnel); err != nil {
+			if isTransientNodeSyncError(err) {
+				syncDeferred = true
+			} else {
+				s.cleanupFailedTunnelUpdate(&oldTunnel, &tunnel)
+				return result.Err(-1, "更新隧道共享服务失败: "+err.Error())
+			}
+		}
+	}
+	if inNodeChanged {
+		if err := SpeedLimit.syncTunnelLimitersAfterEntryChange(&oldTunnel, &tunnel); err != nil {
+			if isTransientNodeSyncError(err) {
+				syncDeferred = true
+			} else {
+				s.cleanupFailedTunnelUpdate(&oldTunnel, &tunnel)
+				return result.Err(-1, "同步限速配置失败: "+err.Error())
+			}
 		}
 	}
 
@@ -233,22 +294,65 @@ func (s *TunnelService) UpdateTunnel(req dto.TunnelUpdateDto) *result.Result {
 		var forwards []model.Forward
 		global.DB.Where("tunnel_id = ?", tunnel.ID).Find(&forwards)
 		for _, f := range forwards {
-			fDto := dto.ForwardDto{
-				Name:          f.Name,
-				TunnelId:      f.TunnelId,
-				InPort:        &f.InPort,
-				RemoteAddr:    f.RemoteAddr,
-				InterfaceName: f.InterfaceName,
-				Strategy:      f.Strategy,
+			var userTunnel model.UserTunnel
+			global.DB.Where("user_id = ? AND tunnel_id = ?", f.UserId, f.TunnelId).First(&userTunnel)
+			var limiter *int
+			if userTunnel.ID != 0 {
+				limiter = &userTunnel.SpeedId
 			}
-			// Use admin role (0) to bypass ownership check, acting as system sync
-			res := Forward.UpdateForward(f.ID, fDto, &utils.UserClaims{RoleId: 0, User: f.UserName, RegisteredClaims: jwt.RegisteredClaims{Subject: fmt.Sprintf("%d", f.UserId)}})
-			if res.Code != 0 {
-				return result.Err(-1, fmt.Sprintf("隧道更新成功，但在同步转发 %s 时失败: %s", f.Name, res.Msg))
+
+			if inNodeChanged {
+				if err := Forward.createGostServices(&f, &tunnel, limiter, &userTunnel); err != nil {
+					if isTransientNodeSyncError(err) {
+						syncDeferred = true
+					} else {
+						s.cleanupFailedTunnelUpdate(&oldTunnel, &tunnel)
+						return result.Err(-1, fmt.Sprintf("隧道更新成功，但在新入口节点同步转发 %s 时失败: %s", f.Name, err.Error()))
+					}
+				}
+				if f.Status != 1 {
+					if err := Forward.pauseGostServices(&f, &tunnel, &userTunnel); err != nil {
+						if isTransientNodeSyncError(err) {
+							syncDeferred = true
+						} else {
+							s.cleanupFailedTunnelUpdate(&oldTunnel, &tunnel)
+							return result.Err(-1, fmt.Sprintf("隧道更新成功，但在新入口节点暂停转发 %s 时失败: %s", f.Name, err.Error()))
+						}
+					}
+				}
+			} else {
+				if err := Forward.updateGostServices(&f, &tunnel, limiter, &userTunnel); err != nil {
+					if isTransientNodeSyncError(err) {
+						syncDeferred = true
+					} else {
+						s.cleanupFailedTunnelUpdate(&oldTunnel, &tunnel)
+						return result.Err(-1, fmt.Sprintf("隧道更新成功，但在同步转发 %s 时失败: %s", f.Name, err.Error()))
+					}
+				}
+				if f.Status != 1 {
+					if err := Forward.pauseGostServices(&f, &tunnel, &userTunnel); err != nil {
+						if isTransientNodeSyncError(err) {
+							syncDeferred = true
+						} else {
+							s.cleanupFailedTunnelUpdate(&oldTunnel, &tunnel)
+							return result.Err(-1, fmt.Sprintf("隧道更新成功，但在同步转发 %s 后暂停失败: %s", f.Name, err.Error()))
+						}
+					}
+				}
 			}
 		}
 	}
 
+	if err := global.DB.Save(&tunnel).Error; err != nil {
+		s.cleanupFailedTunnelUpdate(&oldTunnel, &tunnel)
+		return result.Err(-1, "隧道更新失败: "+err.Error())
+	}
+
+	if syncDeferred {
+		return result.OkMsg("隧道更新成功，节点恢复后将自动同步")
+	}
+
+	s.cleanupOldTunnelConfigAfterSuccessfulUpdate(&oldTunnel, &tunnel)
 	return result.Ok("隧道更新成功")
 }
 func (s *TunnelService) DiagnoseTunnel(tunnelId int64) *result.Result {
@@ -265,10 +369,11 @@ func (s *TunnelService) DiagnoseTunnel(tunnelId int64) *result.Result {
 	results := []map[string]interface{}{}
 
 	if tunnel.Type == 1 {
-		// Port Forward: Check connect to google? Or just ping self?
-		// Java: tcp ping www.google.com:443 from InNode
-		res := s.PerformTcpPing(&inNode, "www.google.com", 443, "入口->外网")
-		results = append(results, res)
+		results = append(results, s.performForwardTargetPings(&inNode, tunnel.ID, "转发->目标")...)
+		if len(results) == 0 {
+			res := s.PerformTcpPing(&inNode, "www.google.com", 443, "入口->外网")
+			results = append(results, res)
+		}
 	} else {
 		// Tunnel Forward
 		var outNode model.Node
@@ -280,9 +385,12 @@ func (s *TunnelService) DiagnoseTunnel(tunnelId int64) *result.Result {
 		res1 := s.PerformTcpPing(&inNode, outNode.ServerIp, tunnel.OutPort, "入口->出口")
 		results = append(results, res1)
 
-		// Out -> External
-		res2 := s.PerformTcpPing(&outNode, "www.google.com", 443, "出口->外网")
-		results = append(results, res2)
+		targetResults := s.performForwardTargetPings(&outNode, tunnel.ID, "出口->目标")
+		if len(targetResults) == 0 {
+			res2 := s.PerformTcpPing(&outNode, "www.google.com", 443, "出口->外网")
+			targetResults = append(targetResults, res2)
+		}
+		results = append(results, targetResults...)
 	}
 
 	report := map[string]interface{}{
@@ -297,6 +405,35 @@ func (s *TunnelService) DiagnoseTunnel(tunnelId int64) *result.Result {
 	}
 
 	return result.Ok(report)
+}
+
+func (s *TunnelService) performForwardTargetPings(node *model.Node, tunnelId int64, desc string) []map[string]interface{} {
+	if node == nil {
+		return nil
+	}
+
+	var forwards []model.Forward
+	global.DB.Where("tunnel_id = ? AND status = ?", tunnelId, 1).Find(&forwards)
+
+	results := make([]map[string]interface{}, 0)
+	seen := map[string]bool{}
+	for _, forward := range forwards {
+		for _, addr := range strings.Split(forward.RemoteAddr, ",") {
+			addr = strings.TrimSpace(addr)
+			if addr == "" || seen[addr] {
+				continue
+			}
+			seen[addr] = true
+
+			targetIp := utils.ExtractIp(addr)
+			targetPort := utils.ExtractPort(addr)
+			if targetIp == "" || targetPort == -1 {
+				continue
+			}
+			results = append(results, s.PerformTcpPing(node, targetIp, targetPort, desc))
+		}
+	}
+	return results
 }
 
 func (s *TunnelService) PerformTcpPing(node *model.Node, targetIp string, port int, desc string) map[string]interface{} {
@@ -430,6 +567,18 @@ func (s *TunnelService) getUsedTunnelOutPorts(outNodeId int64, excludeTunnelId *
 		}
 	}
 
+	// 3. 同节点入口监听端口也会占用节点端口，避免共享 relay 和入口 service 抢端口
+	var forwardInPorts []int
+	global.DB.Model(&model.Forward{}).
+		Joins("JOIN tunnel ON forward.tunnel_id = tunnel.id").
+		Where("tunnel.in_node_id = ?", outNodeId).
+		Pluck("forward.in_port", &forwardInPorts)
+	for _, p := range forwardInPorts {
+		if p != 0 {
+			used[p] = true
+		}
+	}
+
 	return used
 }
 
@@ -444,25 +593,30 @@ func (s *TunnelService) createTunnelSharedServices(tunnel *model.Tunnel) error {
 		return fmt.Errorf("出口节点不存在")
 	}
 
-	// 构建出口节点远程地址
-	remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, tunnel.OutPort)
-	if strings.Contains(tunnel.OutIp, ":") {
-		remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, tunnel.OutPort)
-	}
-
 	// 1. 在入口节点创建共享 chain
-	if res := utils.AddTunnelChain(inNode.ID, tunnel.ID, remoteAddr, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
-		return fmt.Errorf("创建共享 Chain 失败: %s", res.Msg)
+	var syncErr error
+	if res := s.addTunnelChain(tunnel); res.Msg != "OK" {
+		err := fmt.Errorf("创建共享 Chain 失败: %s", res.Msg)
+		if !isTransientNodeSyncMessage(res.Msg) {
+			return err
+		}
+		syncErr = err
 	}
 
 	// 2. 在出口节点创建共享 relay service
-	if res := utils.AddTunnelRelayService(outNode.ID, tunnel.ID, tunnel.OutPort, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
-		// 回滚：删除已创建的 chain
-		utils.DeleteTunnelChain(inNode.ID, tunnel.ID)
-		return fmt.Errorf("创建共享 Relay Service 失败: %s", res.Msg)
+	if res := s.addTunnelRelayService(tunnel); res.Msg != "OK" {
+		err := fmt.Errorf("创建共享 Relay Service 失败: %s", res.Msg)
+		if !isTransientNodeSyncMessage(res.Msg) {
+			// 回滚：删除已创建的 chain
+			utils.DeleteTunnelChain(inNode.ID, tunnel.ID)
+			return err
+		}
+		if syncErr == nil {
+			syncErr = err
+		}
 	}
 
-	return nil
+	return syncErr
 }
 
 // deleteTunnelSharedServices 删除 Type 2 隧道的共享 chain 和 relay service
@@ -473,12 +627,55 @@ func (s *TunnelService) deleteTunnelSharedServices(tunnel *model.Tunnel) error {
 
 	// 删除入口节点的共享 chain
 	if inNode.ID != 0 {
-		utils.DeleteTunnelChain(inNode.ID, tunnel.ID)
+		s.deleteTunnelChain(tunnel)
 	}
 
 	// 删除出口节点的共享 relay service
 	if outNode.ID != 0 {
-		utils.DeleteTunnelRelayService(outNode.ID, tunnel.ID)
+		s.deleteTunnelRelayService(tunnel)
+	}
+
+	return nil
+}
+
+func (s *TunnelService) ReconcileNodeSharedConfig(nodeId int64, config *dto.GostConfigDto) error {
+	if config == nil {
+		return nil
+	}
+
+	reportedChains := make(map[string]bool, len(config.Chains))
+	for _, chain := range config.Chains {
+		reportedChains[chain.Name] = true
+	}
+	reportedServices := make(map[string]bool, len(config.Services))
+	for _, svc := range config.Services {
+		reportedServices[svc.Name] = true
+	}
+
+	var inTunnels []model.Tunnel
+	global.DB.Where("type = ? AND status = ? AND in_node_id = ?", 2, 1, nodeId).Find(&inTunnels)
+	for _, tunnel := range inTunnels {
+		chainName := utils.BuildTunnelChainName(tunnel.ID)
+		if reportedChains[chainName] {
+			continue
+		}
+
+		if res := s.addTunnelChain(&tunnel); res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) {
+			return fmt.Errorf("修复共享 Chain 失败: %s", res.Msg)
+		}
+	}
+
+	var outTunnels []model.Tunnel
+	global.DB.Where("type = ? AND status = ? AND out_node_id = ?", 2, 1, nodeId).Find(&outTunnels)
+	for _, tunnel := range outTunnels {
+		serviceName := fmt.Sprintf("tunnel_%d_relay", tunnel.ID)
+		if reportedServices[serviceName] {
+			continue
+		}
+
+		if res := s.addTunnelRelayService(&tunnel); res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) {
+			return fmt.Errorf("修复共享 Relay Service 失败: %s", res.Msg)
+		}
 	}
 
 	return nil
@@ -494,21 +691,210 @@ func (s *TunnelService) updateTunnelSharedServices(tunnel *model.Tunnel) error {
 		return fmt.Errorf("出口节点不存在")
 	}
 
-	// 构建远程地址
+	// 1. 更新入口节点的共享 chain
+	var syncErr error
+	if res := s.updateTunnelChain(tunnel); res.Msg != "OK" {
+		err := fmt.Errorf("更新共享 Chain 失败: %s", res.Msg)
+		if !isTransientNodeSyncMessage(res.Msg) {
+			return err
+		}
+		syncErr = err
+	}
+
+	// 2. 更新出口节点的共享 relay service
+	if res := s.updateTunnelRelayService(tunnel); res.Msg != "OK" {
+		err := fmt.Errorf("更新共享 Relay Service 失败: %s", res.Msg)
+		if !isTransientNodeSyncMessage(res.Msg) {
+			return err
+		}
+		if syncErr == nil {
+			syncErr = err
+		}
+	}
+
+	return syncErr
+}
+
+func (s *TunnelService) syncTunnelSharedServicesAfterUpdate(oldTunnel *model.Tunnel, tunnel *model.Tunnel) error {
+	if oldTunnel == nil || tunnel == nil {
+		return nil
+	}
+
+	inNodeChanged := oldTunnel.InNodeId != tunnel.InNodeId
+	outNodeChanged := oldTunnel.OutNodeId != tunnel.OutNodeId || oldTunnel.OutPort != tunnel.OutPort
+
+	if !inNodeChanged && !outNodeChanged {
+		return s.updateTunnelSharedServices(tunnel)
+	}
+
+	var syncErr error
+
+	if outNodeChanged {
+		if res := s.addTunnelRelayService(tunnel); res.Msg != "OK" {
+			err := fmt.Errorf("创建共享 Relay Service 失败: %s", res.Msg)
+			if !isTransientNodeSyncMessage(res.Msg) {
+				return err
+			}
+			syncErr = err
+		}
+	} else {
+		if res := s.updateTunnelRelayService(tunnel); res.Msg != "OK" {
+			err := fmt.Errorf("更新共享 Relay Service 失败: %s", res.Msg)
+			if !isTransientNodeSyncMessage(res.Msg) {
+				return err
+			}
+			syncErr = err
+		}
+	}
+
+	if inNodeChanged {
+		if res := s.addTunnelChain(tunnel); res.Msg != "OK" {
+			err := fmt.Errorf("创建共享 Chain 失败: %s", res.Msg)
+			if !isTransientNodeSyncMessage(res.Msg) {
+				return err
+			}
+			if syncErr == nil {
+				syncErr = err
+			}
+		}
+	} else {
+		if res := s.updateTunnelChain(tunnel); res.Msg != "OK" {
+			err := fmt.Errorf("更新共享 Chain 失败: %s", res.Msg)
+			if !isTransientNodeSyncMessage(res.Msg) {
+				return err
+			}
+			if syncErr == nil {
+				syncErr = err
+			}
+		}
+	}
+
+	return syncErr
+}
+
+func (s *TunnelService) cleanupFailedTunnelUpdate(oldTunnel *model.Tunnel, tunnel *model.Tunnel) {
+	if oldTunnel == nil || tunnel == nil {
+		return
+	}
+
+	inNodeChanged := oldTunnel.InNodeId != tunnel.InNodeId
+	outNodeChanged := oldTunnel.OutNodeId != tunnel.OutNodeId || oldTunnel.OutPort != tunnel.OutPort
+
+	if inNodeChanged {
+		SpeedLimit.cleanupNewTunnelLimitersAfterEntryChange(oldTunnel, tunnel)
+	}
+
+	if tunnel.Type == 2 && inNodeChanged {
+		if res := s.deleteTunnelChain(tunnel); res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) && !isGostNotFoundMessage(res.Msg) {
+			fmt.Printf("[TunnelUpdate] 回滚清理新共享 Chain 失败: %s\n", res.Msg)
+		}
+	} else if tunnel.Type == 2 {
+		if res := s.updateTunnelChain(oldTunnel); res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) {
+			fmt.Printf("[TunnelUpdate] 回滚恢复共享 Chain 失败: %s\n", res.Msg)
+		}
+	}
+	if tunnel.Type == 2 && outNodeChanged {
+		if res := s.deleteTunnelRelayService(tunnel); res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) && !isGostNotFoundMessage(res.Msg) {
+			fmt.Printf("[TunnelUpdate] 回滚清理新共享 Relay Service 失败: %s\n", res.Msg)
+		}
+	} else if tunnel.Type == 2 {
+		if res := s.updateTunnelRelayService(oldTunnel); res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) {
+			fmt.Printf("[TunnelUpdate] 回滚恢复共享 Relay Service 失败: %s\n", res.Msg)
+		}
+	}
+
+	var forwards []model.Forward
+	global.DB.Where("tunnel_id = ?", oldTunnel.ID).Find(&forwards)
+	for _, f := range forwards {
+		var userTunnel model.UserTunnel
+		global.DB.Where("user_id = ? AND tunnel_id = ?", f.UserId, f.TunnelId).First(&userTunnel)
+		if inNodeChanged {
+			if err := Forward.deleteGostServices(&f, tunnel, &userTunnel); err != nil && !isTransientNodeSyncError(err) && !isGostNotFoundError(err) {
+				fmt.Printf("[TunnelUpdate] 回滚清理新入口节点转发 %d 失败: %v\n", f.ID, err)
+			}
+		} else {
+			var limiter *int
+			if userTunnel.ID != 0 {
+				limiter = &userTunnel.SpeedId
+			}
+			if err := Forward.updateGostServices(&f, oldTunnel, limiter, &userTunnel); err != nil && !isTransientNodeSyncError(err) {
+				fmt.Printf("[TunnelUpdate] 回滚恢复转发 %d 失败: %v\n", f.ID, err)
+			}
+			if f.Status != 1 {
+				if err := Forward.pauseGostServices(&f, oldTunnel, &userTunnel); err != nil && !isTransientNodeSyncError(err) {
+					fmt.Printf("[TunnelUpdate] 回滚恢复暂停转发 %d 失败: %v\n", f.ID, err)
+				}
+			}
+		}
+	}
+}
+
+func (s *TunnelService) cleanupOldTunnelConfigAfterSuccessfulUpdate(oldTunnel *model.Tunnel, tunnel *model.Tunnel) {
+	if oldTunnel == nil || tunnel == nil {
+		return
+	}
+
+	inNodeChanged := oldTunnel.InNodeId != tunnel.InNodeId
+	outNodeChanged := oldTunnel.OutNodeId != tunnel.OutNodeId || oldTunnel.OutPort != tunnel.OutPort
+
+	if tunnel.Type == 2 && inNodeChanged {
+		if res := s.deleteTunnelChain(oldTunnel); res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) && !isGostNotFoundMessage(res.Msg) {
+			fmt.Printf("[TunnelUpdate] 清理旧共享 Chain 失败: %s\n", res.Msg)
+		}
+	}
+	if tunnel.Type == 2 && outNodeChanged {
+		if res := s.deleteTunnelRelayService(oldTunnel); res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) && !isGostNotFoundMessage(res.Msg) {
+			fmt.Printf("[TunnelUpdate] 清理旧共享 Relay Service 失败: %s\n", res.Msg)
+		}
+	}
+
+	if inNodeChanged {
+		SpeedLimit.cleanupTunnelLimitersAfterEntryChange(oldTunnel, tunnel)
+	}
+
+	if !inNodeChanged {
+		return
+	}
+
+	var forwards []model.Forward
+	global.DB.Where("tunnel_id = ?", tunnel.ID).Find(&forwards)
+	for _, f := range forwards {
+		var userTunnel model.UserTunnel
+		global.DB.Where("user_id = ? AND tunnel_id = ?", f.UserId, f.TunnelId).First(&userTunnel)
+		if err := Forward.deleteGostServices(&f, oldTunnel, &userTunnel); err != nil && !isTransientNodeSyncError(err) && !isGostNotFoundError(err) {
+			fmt.Printf("[TunnelUpdate] 清理旧入口节点转发 %d 失败: %v\n", f.ID, err)
+		}
+	}
+}
+
+func (s *TunnelService) tunnelRemoteAddr(tunnel *model.Tunnel) string {
 	remoteAddr := fmt.Sprintf("%s:%d", tunnel.OutIp, tunnel.OutPort)
 	if strings.Contains(tunnel.OutIp, ":") {
 		remoteAddr = fmt.Sprintf("[%s]:%d", tunnel.OutIp, tunnel.OutPort)
 	}
+	return remoteAddr
+}
 
-	// 1. 更新入口节点的共享 chain
-	if res := utils.UpdateTunnelChain(inNode.ID, tunnel.ID, remoteAddr, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
-		return fmt.Errorf("更新共享 Chain 失败: %s", res.Msg)
-	}
+func (s *TunnelService) addTunnelChain(tunnel *model.Tunnel) *dto.GostDto {
+	return utils.AddTunnelChain(tunnel.InNodeId, tunnel.ID, s.tunnelRemoteAddr(tunnel), tunnel.Protocol, tunnel.InterfaceName)
+}
 
-	// 2. 更新出口节点的共享 relay service
-	if res := utils.UpdateTunnelRelayService(outNode.ID, tunnel.ID, tunnel.OutPort, tunnel.Protocol, tunnel.InterfaceName); res.Msg != "OK" {
-		return fmt.Errorf("更新共享 Relay Service 失败: %s", res.Msg)
-	}
+func (s *TunnelService) updateTunnelChain(tunnel *model.Tunnel) *dto.GostDto {
+	return utils.UpdateTunnelChain(tunnel.InNodeId, tunnel.ID, s.tunnelRemoteAddr(tunnel), tunnel.Protocol, tunnel.InterfaceName)
+}
 
-	return nil
+func (s *TunnelService) deleteTunnelChain(tunnel *model.Tunnel) *dto.GostDto {
+	return utils.DeleteTunnelChain(tunnel.InNodeId, tunnel.ID)
+}
+
+func (s *TunnelService) addTunnelRelayService(tunnel *model.Tunnel) *dto.GostDto {
+	return utils.AddTunnelRelayService(tunnel.OutNodeId, tunnel.ID, tunnel.OutPort, tunnel.Protocol, tunnel.InterfaceName)
+}
+
+func (s *TunnelService) updateTunnelRelayService(tunnel *model.Tunnel) *dto.GostDto {
+	return utils.UpdateTunnelRelayService(tunnel.OutNodeId, tunnel.ID, tunnel.OutPort, tunnel.Protocol, tunnel.InterfaceName)
+}
+
+func (s *TunnelService) deleteTunnelRelayService(tunnel *model.Tunnel) *dto.GostDto {
+	return utils.DeleteTunnelRelayService(tunnel.OutNodeId, tunnel.ID)
 }

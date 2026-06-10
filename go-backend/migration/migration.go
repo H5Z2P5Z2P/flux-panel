@@ -25,6 +25,7 @@ var migrations = []struct {
 }{
 	{"001_tunnel_out_port", migrate001TunnelOutPort},
 	{"002_node_port_ranges", migrate002NodePortRanges},
+	{"003_forward_pause_reason", migrate003ForwardPauseReason},
 }
 
 // RunMigrations 在程序启动时执行所有待处理的迁移

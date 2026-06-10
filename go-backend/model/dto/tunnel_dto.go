@@ -18,6 +18,8 @@ type TunnelDto struct {
 type TunnelUpdateDto struct {
 	ID            int64           `json:"id" binding:"required"`
 	Name          string          `json:"name"`
+	InNodeId      *int64          `json:"inNodeId"`
+	OutNodeId     *int64          `json:"outNodeId"`
 	Flow          int             `json:"flow"`
 	Protocol      string          `json:"protocol"`
 	TrafficRatio  decimal.Decimal `json:"trafficRatio"`

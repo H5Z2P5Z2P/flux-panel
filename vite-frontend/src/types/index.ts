@@ -38,8 +38,13 @@ export interface UserTunnel {
   tunnelId: number;
   tunnelName: string;
   status: number; // 1-正常, 0-禁用
+  flow?: number; // 流量限制(GB)
+  num?: number; // 转发数量限制
+  expTime?: number; // 过期时间戳
+  flowResetTime?: number; // 流量重置日期(1-31号)
   speedId?: number | null; // 限速规则ID
   speedLimitName?: string; // 限速规则名称
+  speed?: number; // 限速值(Mbps)
   inFlow?: number; // 下载流量(字节)
   outFlow?: number; // 上传流量(字节)
   tunnelFlow?: number; // 隧道流量计算类型(1-单向, 2-双向)
@@ -48,6 +53,10 @@ export interface UserTunnel {
 export interface UserTunnelForm {
   tunnelId: number | null;
   speedId: number | null;
+  flow: number;
+  num: number;
+  expTime: number;
+  flowResetTime: number;
 }
 
 export interface Tunnel {
@@ -59,14 +68,16 @@ export interface Tunnel {
   exitNodeName?: string;
   status?: number;
   flow?: number; // 流量计算类型
+  inNodePortRanges?: string;
 }
 
 export interface SpeedLimit {
   id: number;
   name: string;
   tunnelId: number;
-  uploadSpeed: number;
-  downloadSpeed: number;
+  speed?: number;
+  uploadSpeed?: number;
+  downloadSpeed?: number;
 }
 
 export interface Pagination {

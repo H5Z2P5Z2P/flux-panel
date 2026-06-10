@@ -13,7 +13,7 @@ interface UserInfo {
   inFlow: number;
   outFlow: number;
   num: number;
-  expTime?: string;
+  expTime?: number;
   flowResetTime?: number;
 }
 
@@ -25,7 +25,7 @@ interface UserTunnel {
   inFlow: number;
   outFlow: number;
   num: number;
-  expTime?: string;
+  expTime?: number;
   flowResetTime?: number;
   tunnelFlow: number;
 }
@@ -69,6 +69,14 @@ export default function DashboardPage() {
   const [addressModalTitle, setAddressModalTitle] = useState('');
   const [addressList, setAddressList] = useState<AddressItem[]>([]);
 
+  const isUnlimitedLimit = (value?: number): boolean => value === 0 || value === 99999;
+
+  const toDate = (timestamp?: number): Date | null => {
+    if (!timestamp) return null;
+    const date = new Date(timestamp);
+    return isNaN(date.getTime()) ? null : date;
+  };
+
   // 检查有效期通知
   const checkExpirationNotifications = (userInfo: UserInfo, tunnels: UserTunnel[]) => {
     // 避免重复通知，检查是否已经显示过
@@ -81,36 +89,27 @@ export default function DashboardPage() {
 
     let hasNotification = false;
 
+    const now = new Date();
+
     // 检查主账户有效期
-    if (userInfo.expTime) {
-      const expDate = new Date(userInfo.expTime);
-      const now = new Date();
-
-      if (!isNaN(expDate.getTime()) && expDate > now) {
-        const diffTime = expDate.getTime() - now.getTime();
+    const userExpDate = toDate(userInfo.expTime);
+    if (userExpDate) {
+      if (userExpDate <= now) {
+        hasNotification = true;
+        toast('账户已过期，请立即续费', {
+          icon: '⚠️',
+          duration: 8000,
+          style: { background: '#ef4444', color: '#fff' }
+        });
+      } else {
+        const diffTime = userExpDate.getTime() - now.getTime();
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-        if (diffDays <= 7 && diffDays > 0) {
+        if (diffDays <= 7) {
           hasNotification = true;
-          if (diffDays === 1) {
-            toast('账户将于明天过期，请及时续费', {
-              icon: '⚠️',
-              duration: 6000,
-              style: { background: '#f59e0b', color: '#fff' }
-            });
-          } else {
-            toast(`账户将于${diffDays}天后过期，请及时续费`, {
-              icon: '⚠️',
-              duration: 6000,
-              style: { background: '#f59e0b', color: '#fff' }
-            });
-          }
-        } else if (diffDays <= 0) {
-          hasNotification = true;
-          toast('账户已过期，请立即续费', {
+          toast(diffDays === 1 ? '账户将于明天过期，请及时续费' : `账户将于${diffDays}天后过期，请及时续费`, {
             icon: '⚠️',
-            duration: 8000,
-            style: { background: '#ef4444', color: '#fff' }
+            duration: 6000,
+            style: { background: '#f59e0b', color: '#fff' }
           });
         }
       }
@@ -118,38 +117,28 @@ export default function DashboardPage() {
 
     // 检查隧道有效期
     tunnels.forEach(tunnel => {
-      if (tunnel.expTime) {
-        const expDate = new Date(tunnel.expTime);
-        const now = new Date();
+      const expDate = toDate(tunnel.expTime);
+      if (!expDate) return;
 
-        if (!isNaN(expDate.getTime()) && expDate > now) {
-          const diffTime = expDate.getTime() - now.getTime();
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      if (expDate <= now) {
+        hasNotification = true;
+        toast(`隧道"${tunnel.tunnelName}"已过期`, {
+          icon: '⚠️',
+          duration: 6000,
+          style: { background: '#ef4444', color: '#fff' }
+        });
+        return;
+      }
 
-          if (diffDays <= 7 && diffDays > 0) {
-            hasNotification = true;
-            if (diffDays === 1) {
-              toast(`隧道"${tunnel.tunnelName}"将于明天过期`, {
-                icon: '⚠️',
-                duration: 5000,
-                style: { background: '#f59e0b', color: '#fff' }
-              });
-            } else {
-              toast(`隧道"${tunnel.tunnelName}"将于${diffDays}天后过期`, {
-                icon: '⚠️',
-                duration: 5000,
-                style: { background: '#f59e0b', color: '#fff' }
-              });
-            }
-          } else if (diffDays <= 0) {
-            hasNotification = true;
-            toast(`隧道"${tunnel.tunnelName}"已过期`, {
-              icon: '⚠️',
-              duration: 6000,
-              style: { background: '#ef4444', color: '#fff' }
-            });
-          }
-        }
+      const diffTime = expDate.getTime() - now.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      if (diffDays <= 7) {
+        hasNotification = true;
+        toast(diffDays === 1 ? `隧道"${tunnel.tunnelName}"将于明天过期` : `隧道"${tunnel.tunnelName}"将于${diffDays}天后过期`, {
+          icon: '⚠️',
+          duration: 5000,
+          style: { background: '#f59e0b', color: '#fff' }
+        });
       }
     });
 
@@ -200,8 +189,7 @@ export default function DashboardPage() {
   };
 
   const formatFlow = (value: number, unit: string = 'bytes'): string => {
-    // 99999 表示无限制
-    if (value === 99999) {
+    if (unit === 'gb' && isUnlimitedLimit(value)) {
       return '无限制';
     }
 
@@ -217,8 +205,7 @@ export default function DashboardPage() {
   };
 
   const formatNumber = (value: number): string => {
-    // 99999 表示无限制
-    if (value === 99999) {
+    if (isUnlimitedLimit(value)) {
       return '无限制';
     }
     return value.toString();
@@ -239,7 +226,7 @@ export default function DashboardPage() {
   };
 
 
-  const getExpStatus = (expTime?: string) => {
+  const getExpStatus = (expTime?: number) => {
     if (!expTime) return {
       color: 'text-green-600 dark:text-green-400',
       bg: 'bg-green-50 dark:bg-green-500/10 border-green-200 dark:border-green-500/20',
@@ -247,9 +234,9 @@ export default function DashboardPage() {
     };
 
     const now = new Date();
-    const expDate = new Date(expTime);
+    const expDate = toDate(expTime);
 
-    if (isNaN(expDate.getTime())) {
+    if (!expDate) {
       return {
         color: 'text-gray-600 dark:text-gray-400',
         bg: 'bg-gray-50 dark:bg-black/10 border-gray-200 dark:border-gray-500/20',
@@ -298,14 +285,12 @@ export default function DashboardPage() {
     if (type === 'flow') {
       const totalUsed = calculateUserTotalUsedFlow();
       const totalLimit = (userInfo.flow || 0) * 1024 * 1024 * 1024;
-      // 无限制时返回0%
-      if (userInfo.flow === 99999) return 0;
+      if (isUnlimitedLimit(userInfo.flow)) return 0;
       return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
     } else if (type === 'forwards') {
       const totalUsed = forwardList.length;
       const totalLimit = userInfo.num || 0;
-      // 无限制时返回0%
-      if (userInfo.num === 99999) return 0;
+      if (isUnlimitedLimit(userInfo.num)) return 0;
       return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
     }
     return 0;
@@ -353,8 +338,7 @@ export default function DashboardPage() {
   const calculateTunnelFlowPercentage = (tunnel: UserTunnel): number => {
     const totalUsed = calculateTunnelUsedFlow(tunnel);
     const totalLimit = (tunnel.flow || 0) * 1024 * 1024 * 1024;
-    // 无限制时返回0%
-    if (tunnel.flow === 99999) return 0;
+    if (isUnlimitedLimit(tunnel.flow)) return 0;
     return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
   };
 
@@ -365,8 +349,7 @@ export default function DashboardPage() {
   const calculateTunnelForwardPercentage = (tunnel: UserTunnel): number => {
     const totalUsed = getTunnelUsedForwards(tunnel.tunnelId);
     const totalLimit = tunnel.num || 0;
-    // 无限制时返回0%
-    if (tunnel.num === 99999) return 0;
+    if (isUnlimitedLimit(tunnel.num)) return 0;
     return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
   };
 
@@ -564,7 +547,7 @@ export default function DashboardPage() {
     try {
       const res = await getGuestLink();
       if (res.code === 0) {
-        const url = `${window.location.origin}/guest?token=${res.data.token}`;
+        const url = `${window.location.origin}/guest/dashboard?token=${res.data.token}`;
         await navigator.clipboard.writeText(url);
         toast.success('访客链接已复制');
       } else {
@@ -640,10 +623,10 @@ export default function DashboardPage() {
               </div>
               <p className="text-base lg:text-xl font-bold text-foreground truncate">{formatFlow(calculateUserTotalUsedFlow())}</p>
               <div className="mt-1">
-                {renderProgressBar(calculateUsagePercentage('flow'), 'sm', userInfo.flow === 99999)}
+                {renderProgressBar(calculateUsagePercentage('flow'), 'sm', isUnlimitedLimit(userInfo.flow))}
                 <div className="flex items-center justify-between mt-1">
                   <p className="text-xs text-default-500 truncate">
-                    {userInfo.flow === 99999 ? '无限制' : `${calculateUsagePercentage('flow').toFixed(1)}%`}
+                    {isUnlimitedLimit(userInfo.flow) ? '无限制' : `${calculateUsagePercentage('flow').toFixed(1)}%`}
                   </p>
                   {(userInfo.flowResetTime !== undefined && userInfo.flowResetTime !== null) && (
                     <div className="text-xs text-default-500 flex items-center gap-1">
@@ -688,9 +671,9 @@ export default function DashboardPage() {
               </div>
               <p className="text-base lg:text-xl font-bold text-foreground truncate">{forwardList.length}</p>
               <div className="mt-1">
-                {renderProgressBar(calculateUsagePercentage('forwards'), 'sm', userInfo.num === 99999)}
+                {renderProgressBar(calculateUsagePercentage('forwards'), 'sm', isUnlimitedLimit(userInfo.num))}
                 <p className="text-xs text-default-500 mt-1 truncate">
-                  {userInfo.num === 99999 ? '无限制' : `${calculateUsagePercentage('forwards').toFixed(1)}%`}
+                  {isUnlimitedLimit(userInfo.num) ? '无限制' : `${calculateUsagePercentage('forwards').toFixed(1)}%`}
                 </p>
               </div>
             </div>
@@ -838,7 +821,7 @@ export default function DashboardPage() {
                           <p className="text-sm text-default-600 mb-1">已用流量</p>
                           <p className="font-semibold text-foreground">{formatFlow(calculateTunnelUsedFlow(tunnel))}</p>
                           <div className="mt-1">
-                            {renderProgressBar(calculateTunnelFlowPercentage(tunnel), 'sm', tunnel.flow === 99999)}
+                            {renderProgressBar(calculateTunnelFlowPercentage(tunnel), 'sm', isUnlimitedLimit(tunnel.flow))}
                           </div>
                         </div>
                         <div>
@@ -849,7 +832,7 @@ export default function DashboardPage() {
                           <p className="text-sm text-default-600 mb-1">已用转发</p>
                           <p className="font-semibold text-foreground">{getTunnelUsedForwards(tunnel.tunnelId)}</p>
                           <div className="mt-1">
-                            {renderProgressBar(calculateTunnelForwardPercentage(tunnel), 'sm', tunnel.num === 99999)}
+                            {renderProgressBar(calculateTunnelForwardPercentage(tunnel), 'sm', isUnlimitedLimit(tunnel.num))}
                           </div>
                         </div>
                       </div>
@@ -981,4 +964,4 @@ export default function DashboardPage() {
     </div>
 
   );
-} 
+}

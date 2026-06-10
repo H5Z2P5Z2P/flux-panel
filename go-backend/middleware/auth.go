@@ -16,7 +16,7 @@ func Auth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			c.JSON(http.StatusOK, result.Err(-1, "未登录"))
+			c.JSON(http.StatusOK, result.Err(401, "未登录或token已过期"))
 			c.Abort()
 			return
 		}
@@ -36,7 +36,7 @@ func Auth() gin.HandlerFunc {
 		})
 
 		if err != nil || !token.Valid {
-			c.JSON(http.StatusOK, result.Err(-1, "Token无效或已过期"))
+			c.JSON(http.StatusOK, result.Err(401, "无效的token或token已过期"))
 			c.Abort()
 			return
 		}

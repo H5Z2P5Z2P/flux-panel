@@ -9,13 +9,14 @@ import { Spinner } from "@heroui/spinner";
 import toast from 'react-hot-toast';
 
 
-import { 
-  createSpeedLimit, 
-  getSpeedLimitList, 
-  updateSpeedLimit, 
-  deleteSpeedLimit, 
-  getTunnelList 
+import {
+  createSpeedLimit,
+  getSpeedLimitList,
+  updateSpeedLimit,
+  deleteSpeedLimit,
+  getTunnelList
 } from "@/api";
+import { responseMessage } from "@/utils/response";
 
 interface SpeedLimitRule {
   id: number;
@@ -46,7 +47,7 @@ export default function LimitPage() {
   const [loading, setLoading] = useState(true);
   const [rules, setRules] = useState<SpeedLimitRule[]>([]);
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
-  
+
   // 模态框状态
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -54,7 +55,7 @@ export default function LimitPage() {
   const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [ruleToDelete, setRuleToDelete] = useState<SpeedLimitRule | null>(null);
-  
+
   // 表单状态
   const [form, setForm] = useState<SpeedLimitForm>({
     name: '',
@@ -63,7 +64,7 @@ export default function LimitPage() {
     tunnelName: '',
     status: 1
   });
-  
+
   // 表单验证错误
   const [errors, setErrors] = useState<{[key: string]: string}>({});
 
@@ -79,13 +80,13 @@ export default function LimitPage() {
         getSpeedLimitList(),
         getTunnelList()
       ]);
-      
+
       if (rulesRes.code === 0) {
         setRules(rulesRes.data || []);
       } else {
         toast.error(rulesRes.msg || '获取限速规则失败');
       }
-      
+
       if (tunnelsRes.code === 0) {
         setTunnels(tunnelsRes.data || []);
       } else {
@@ -102,21 +103,21 @@ export default function LimitPage() {
   // 表单验证
   const validateForm = (): boolean => {
     const newErrors: {[key: string]: string} = {};
-    
+
     if (!form.name.trim()) {
       newErrors.name = '请输入规则名称';
     } else if (form.name.length < 2 || form.name.length > 50) {
       newErrors.name = '规则名称长度应在2-50个字符之间';
     }
-    
+
     if (!form.speed || form.speed < 1) {
       newErrors.speed = '请输入有效的速度限制（≥1 Mbps）';
     }
-    
+
     if (!form.tunnelId) {
       newErrors.tunnelId = '请选择要绑定的隧道';
     }
-    
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -159,7 +160,7 @@ export default function LimitPage() {
   // 确认删除规则
   const confirmDelete = async () => {
     if (!ruleToDelete) return;
-    
+
     setDeleteLoading(true);
     try {
       const res = await deleteSpeedLimit(ruleToDelete.id);
@@ -181,7 +182,7 @@ export default function LimitPage() {
   // 提交表单
   const handleSubmit = async () => {
     if (!validateForm()) return;
-    
+
     setSubmitLoading(true);
     try {
       let res;
@@ -191,9 +192,9 @@ export default function LimitPage() {
         const { id, ...createData } = form;
         res = await createSpeedLimit(createData);
       }
-      
+
       if (res.code === 0) {
-        toast.success(isEdit ? '修改成功' : '创建成功');
+        toast.success(responseMessage(res, isEdit ? '修改成功' : '创建成功'));
         setModalOpen(false);
         loadData();
       } else {
@@ -209,19 +210,19 @@ export default function LimitPage() {
 
   if (loading) {
     return (
-      
+
         <div className="flex items-center justify-center h-64">
           <div className="flex items-center gap-3">
             <Spinner size="sm" />
             <span className="text-default-600">正在加载...</span>
           </div>
         </div>
-      
+
     );
   }
 
   return (
-    
+
       <div className="px-3 lg:px-6 py-8">
         {/* 页面头部 */}
         <div className="flex items-center justify-between mb-6">
@@ -233,7 +234,7 @@ export default function LimitPage() {
               variant="flat"
               color="primary"
               onPress={handleAdd}
-             
+
             >
               新增
             </Button>
@@ -249,9 +250,9 @@ export default function LimitPage() {
                     <div>
                       <h3 className="font-semibold text-foreground">{rule.name}</h3>
                     </div>
-                    <Chip 
-                      color={rule.status === 1 ? "success" : "danger"} 
-                      variant="flat" 
+                    <Chip
+                      color={rule.status === 1 ? "success" : "danger"}
+                      variant="flat"
                       size="sm"
                     >
                       {rule.status === 1 ? '运行' : '异常'}
@@ -277,7 +278,7 @@ export default function LimitPage() {
                       )}
                     </div>
                   </div>
-                  
+
                   <div className="flex gap-2 mt-4">
                     <Button
                       size="sm"
@@ -333,7 +334,7 @@ export default function LimitPage() {
         )}
 
         {/* 新增/编辑模态框 */}
-        <Modal 
+        <Modal
           isOpen={modalOpen}
           onOpenChange={setModalOpen}
           size="2xl"
@@ -363,7 +364,7 @@ export default function LimitPage() {
                       errorMessage={errors.name}
                       variant="bordered"
                     />
-                    
+
                     <Input
                       label="速度限制"
                       placeholder="请输入速度限制"
@@ -379,7 +380,7 @@ export default function LimitPage() {
                         </div>
                       }
                     />
-                    
+
                     <Select
                       label="绑定隧道"
                       placeholder="请选择要绑定的隧道"
@@ -388,14 +389,14 @@ export default function LimitPage() {
                         const selectedKey = Array.from(keys)[0] as string;
                         if (selectedKey) {
                           const selectedTunnel = tunnels.find(tunnel => tunnel.id === parseInt(selectedKey));
-                          setForm(prev => ({ 
-                            ...prev, 
+                          setForm(prev => ({
+                            ...prev,
                             tunnelId: parseInt(selectedKey),
                             tunnelName: selectedTunnel?.name || ''
                           }));
                         } else {
-                          setForm(prev => ({ 
-                            ...prev, 
+                          setForm(prev => ({
+                            ...prev,
                             tunnelId: null,
                             tunnelName: ''
                           }));
@@ -417,8 +418,8 @@ export default function LimitPage() {
                   <Button variant="light" onPress={onClose}>
                     取消
                   </Button>
-                  <Button 
-                    color="primary" 
+                  <Button
+                    color="primary"
                     onPress={handleSubmit}
                     isLoading={submitLoading}
                   >
@@ -431,7 +432,7 @@ export default function LimitPage() {
         </Modal>
 
         {/* 删除确认模态框 */}
-        <Modal 
+        <Modal
           isOpen={deleteModalOpen}
           onOpenChange={setDeleteModalOpen}
           size="2xl"
@@ -457,8 +458,8 @@ export default function LimitPage() {
                   <Button variant="light" onPress={onClose}>
                     取消
                   </Button>
-                  <Button 
-                    color="danger" 
+                  <Button
+                    color="danger"
                     onPress={confirmDelete}
                     isLoading={deleteLoading}
                   >
@@ -470,6 +471,6 @@ export default function LimitPage() {
           </ModalContent>
         </Modal>
       </div>
-    
+
   );
-} 
+}

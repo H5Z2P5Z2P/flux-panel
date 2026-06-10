@@ -37,7 +37,9 @@ func (u *UserController) Create(c *gin.Context) {
 }
 
 func (u *UserController) List(c *gin.Context) {
-	c.JSON(http.StatusOK, service.User.GetAllUsers())
+	var queryDto dto.UserQueryDto
+	_ = c.ShouldBindJSON(&queryDto)
+	c.JSON(http.StatusOK, service.User.GetAllUsers(queryDto))
 }
 
 func (u *UserController) Update(c *gin.Context) {

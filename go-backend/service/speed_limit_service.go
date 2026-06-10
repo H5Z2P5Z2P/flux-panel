@@ -51,6 +51,9 @@ func (s *SpeedLimitService) CreateSpeedLimit(dto dto.SpeedLimitDto) *result.Resu
 
 	// 4. Gost Sync
 	if err := s.addGostLimiter(&speedLimit, &tunnel); err != nil {
+		if isTransientNodeSyncError(err) {
+			return result.OkMsg("限速规则创建成功，节点恢复后将自动同步")
+		}
 		// Rollback
 		speedLimit.Status = 0
 		global.DB.Save(&speedLimit)
@@ -111,8 +114,13 @@ func (s *SpeedLimitService) UpdateSpeedLimit(updateDto dto.SpeedLimitUpdateDto) 
 	speedLimit.UpdatedTime = time.Now().UnixMilli()
 
 	// 4. Gost Sync
+	syncDeferred := false
 	if err := s.updateGostLimiter(&speedLimit, &tunnel); err != nil {
-		return result.Err(-1, err.Error())
+		if isTransientNodeSyncError(err) {
+			syncDeferred = true
+		} else {
+			return result.Err(-1, err.Error())
+		}
 	}
 
 	// 5. Save
@@ -120,6 +128,9 @@ func (s *SpeedLimitService) UpdateSpeedLimit(updateDto dto.SpeedLimitUpdateDto) 
 		return result.Err(-1, "更新限速规则失败")
 	}
 
+	if syncDeferred {
+		return result.OkMsg("限速规则更新成功，节点恢复后将自动同步")
+	}
 	return result.Ok("限速规则更新成功")
 }
 
@@ -152,6 +163,105 @@ func (s *SpeedLimitService) DeleteSpeedLimit(id int64) *result.Result {
 	return result.Ok("限速规则删除成功")
 }
 
+func (s *SpeedLimitService) ReconcileNodeLimiters(nodeId int64, config *dto.GostConfigDto) error {
+	if config == nil {
+		return nil
+	}
+
+	reportedLimiters := make(map[string]bool, len(config.Limiters))
+	for _, limiter := range config.Limiters {
+		reportedLimiters[limiter.Name] = true
+	}
+
+	var speedLimits []model.SpeedLimit
+	if err := global.DB.Joins("JOIN tunnel ON speed_limit.tunnel_id = tunnel.id").
+		Where("tunnel.in_node_id = ? AND speed_limit.status = ?", nodeId, 1).
+		Find(&speedLimits).Error; err != nil {
+		return err
+	}
+
+	for _, speedLimit := range speedLimits {
+		name := fmt.Sprintf("%d", speedLimit.ID)
+		if reportedLimiters[name] {
+			continue
+		}
+
+		var tunnel model.Tunnel
+		if err := global.DB.First(&tunnel, speedLimit.TunnelId).Error; err != nil {
+			continue
+		}
+		if err := s.addGostLimiter(&speedLimit, &tunnel); err != nil && !isTransientNodeSyncError(err) {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *SpeedLimitService) syncTunnelLimitersAfterEntryChange(oldTunnel *model.Tunnel, tunnel *model.Tunnel) error {
+	if oldTunnel == nil || tunnel == nil || oldTunnel.InNodeId == tunnel.InNodeId {
+		return nil
+	}
+
+	var speedLimits []model.SpeedLimit
+	if err := global.DB.Where("tunnel_id = ? AND status = ?", tunnel.ID, 1).Find(&speedLimits).Error; err != nil {
+		return err
+	}
+
+	var syncErr error
+	for _, speedLimit := range speedLimits {
+		if err := s.addGostLimiter(&speedLimit, tunnel); err != nil {
+			if isTransientNodeSyncError(err) {
+				if syncErr == nil {
+					syncErr = err
+				}
+				continue
+			}
+			return err
+		}
+	}
+
+	return syncErr
+}
+
+func (s *SpeedLimitService) cleanupTunnelLimitersAfterEntryChange(oldTunnel *model.Tunnel, tunnel *model.Tunnel) {
+	if oldTunnel == nil || tunnel == nil || oldTunnel.InNodeId == tunnel.InNodeId {
+		return
+	}
+
+	var speedLimits []model.SpeedLimit
+	if err := global.DB.Where("tunnel_id = ? AND status = ?", tunnel.ID, 1).Find(&speedLimits).Error; err != nil {
+		fmt.Printf("[TunnelUpdate] 查询旧入口节点限速器失败: %v\n", err)
+		return
+	}
+
+	for _, speedLimit := range speedLimits {
+		res := utils.DeleteLimiters(oldTunnel.InNodeId, speedLimit.ID)
+		if res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) && !isGostNotFoundMessage(res.Msg) {
+			fmt.Printf("[TunnelUpdate] 清理旧入口节点限速器 %d 失败: %s\n", speedLimit.ID, res.Msg)
+		}
+	}
+}
+
+func (s *SpeedLimitService) cleanupNewTunnelLimitersAfterEntryChange(oldTunnel *model.Tunnel, tunnel *model.Tunnel) {
+	if oldTunnel == nil || tunnel == nil || oldTunnel.InNodeId == tunnel.InNodeId {
+		return
+	}
+
+	var speedLimits []model.SpeedLimit
+	if err := global.DB.Where("tunnel_id = ? AND status = ?", tunnel.ID, 1).Find(&speedLimits).Error; err != nil {
+		fmt.Printf("[TunnelUpdate] 查询新入口节点限速器失败: %v\n", err)
+		return
+	}
+
+	for _, speedLimit := range speedLimits {
+		res := utils.DeleteLimiters(tunnel.InNodeId, speedLimit.ID)
+		if res.Msg != "OK" && !isTransientNodeSyncMessage(res.Msg) && !isGostNotFoundMessage(res.Msg) {
+			fmt.Printf("[TunnelUpdate] 回滚清理新入口节点限速器 %d 失败: %s\n", speedLimit.ID, res.Msg)
+		}
+	}
+}
+
 // --- Private Helper Methods ---
 
 func (s *SpeedLimitService) addGostLimiter(speedLimit *model.SpeedLimit, tunnel *model.Tunnel) error {
@@ -163,7 +273,7 @@ func (s *SpeedLimitService) addGostLimiter(speedLimit *model.SpeedLimit, tunnel 
 
 	res := utils.AddLimiters(node.ID, speedLimit.ID, speedMBps)
 	if res.Msg != "OK" {
-		return fmt.Errorf(res.Msg)
+		return fmt.Errorf("%s", res.Msg)
 	}
 	return nil
 }
@@ -180,10 +290,10 @@ func (s *SpeedLimitService) updateGostLimiter(speedLimit *model.SpeedLimit, tunn
 		if len(res.Msg) > 0 && (res.Msg == "not found" || strings.Contains(res.Msg, "not found")) {
 			res = utils.AddLimiters(node.ID, speedLimit.ID, speedMBps)
 			if res.Msg != "OK" {
-				return fmt.Errorf(res.Msg)
+				return fmt.Errorf("%s", res.Msg)
 			}
 		} else {
-			return fmt.Errorf(res.Msg)
+			return fmt.Errorf("%s", res.Msg)
 		}
 	}
 	return nil

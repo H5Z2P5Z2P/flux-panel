@@ -45,6 +45,7 @@ import {
     updateForwardOrder
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
+import { responseMessage } from "@/utils/response";
 
 interface Forward {
     id: number;
@@ -69,8 +70,7 @@ interface Forward {
 interface Tunnel {
     id: number;
     name: string;
-    inNodePortSta?: number;
-    inNodePortEnd?: number;
+    inNodePortRanges?: string;
 }
 
 interface ForwardForm {
@@ -118,6 +118,39 @@ interface TunnelGroup {
     tunnelName: string;
     forwards: Forward[];
 }
+
+interface PortRange {
+    start: number;
+    end: number;
+}
+
+const parsePortRanges = (ranges?: string): PortRange[] => {
+    if (!ranges) return [];
+
+    return ranges
+        .split(',')
+        .map(part => part.trim())
+        .filter(Boolean)
+        .map(part => {
+            const [startRaw, endRaw] = part.split('-').map(value => Number(value.trim()));
+            const end = endRaw || startRaw;
+            if (!Number.isInteger(startRaw) || !Number.isInteger(end) || startRaw < 1 || end > 65535 || startRaw > end) {
+                return null;
+            }
+            return { start: startRaw, end };
+        })
+        .filter((range): range is PortRange => range !== null);
+};
+
+const isPortInRanges = (port: number, ranges: PortRange[]): boolean => {
+    return ranges.some(range => port >= range.start && port <= range.end);
+};
+
+const formatPortRanges = (ranges?: string): string => {
+    const parsed = parsePortRanges(ranges);
+    if (parsed.length === 0) return '';
+    return parsed.map(range => range.start === range.end ? `${range.start}` : `${range.start}-${range.end}`).join(', ');
+};
 
 export interface ForwardListProps {
     userId?: number;
@@ -290,7 +323,7 @@ export default function ForwardList({ userId }: ForwardListProps) {
                 if (viewMode === 'direct') {
                     // 在平铺模式下，只对当前用户的转发进行排序
                     let userForwards = forwardsData;
-                    // If not in admin mode (no userId prop), filtering by token ID is correct. 
+                    // If not in admin mode (no userId prop), filtering by token ID is correct.
                     // If in admin mode, we already filtered by userId above, so use all.
                     if (!userId) {
                         const currentUserId = JwtUtil.getUserIdFromToken();
@@ -437,10 +470,9 @@ export default function ForwardList({ userId }: ForwardListProps) {
             newErrors.inPort = '端口号必须在1-65535之间';
         }
 
-        if (selectedTunnel && selectedTunnel.inNodePortSta && selectedTunnel.inNodePortEnd && form.inPort) {
-            if (form.inPort < selectedTunnel.inNodePortSta || form.inPort > selectedTunnel.inNodePortEnd) {
-                newErrors.inPort = `端口号必须在${selectedTunnel.inNodePortSta}-${selectedTunnel.inNodePortEnd}范围内`;
-            }
+        const selectedTunnelPortRanges = parsePortRanges(selectedTunnel?.inNodePortRanges);
+        if (selectedTunnelPortRanges.length > 0 && form.inPort && !isPortInRanges(form.inPort, selectedTunnelPortRanges)) {
+            newErrors.inPort = `端口号必须在允许范围内：${formatPortRanges(selectedTunnel?.inNodePortRanges)}`;
         }
 
         setErrors(newErrors);
@@ -572,7 +604,7 @@ export default function ForwardList({ userId }: ForwardListProps) {
             }
 
             if (res.code === 0) {
-                toast.success(isEdit ? '修改成功' : '创建成功');
+                toast.success(responseMessage(res, isEdit ? '修改成功' : '创建成功'));
                 setModalOpen(false);
                 loadData();
             } else {
@@ -611,7 +643,7 @@ export default function ForwardList({ userId }: ForwardListProps) {
             }
 
             if (res.code === 0) {
-                toast.success(targetState ? '服务已启动' : '服务已暂停');
+                toast.success(responseMessage(res, targetState ? '服务已启动' : '服务已暂停'));
                 // 更新转发状态
                 setForwards(prev => prev.map(f =>
                     f.id === forward.id
@@ -1135,7 +1167,7 @@ export default function ForwardList({ userId }: ForwardListProps) {
         // 在平铺模式下，只显示当前用户的转发
         let filteredForwards = forwards;
         if (viewMode === 'direct') {
-            // If userId is provided (Admin viewing user), we want to show all forwards in 'forwards' 
+            // If userId is provided (Admin viewing user), we want to show all forwards in 'forwards'
             // (which are already filtered by loadData).
             // If NO userId is provided (Regular user or Admin viewing self), we filter by Token ID matching.
             if (!userId) {
@@ -1652,8 +1684,8 @@ export default function ForwardList({ userId }: ForwardListProps) {
                                         errorMessage={errors.inPort}
                                         variant="bordered"
                                         description={
-                                            selectedTunnel && selectedTunnel.inNodePortSta && selectedTunnel.inNodePortEnd
-                                                ? `允许范围: ${selectedTunnel.inNodePortSta}-${selectedTunnel.inNodePortEnd}`
+                                            selectedTunnel && formatPortRanges(selectedTunnel.inNodePortRanges)
+                                                ? `允许范围: ${formatPortRanges(selectedTunnel.inNodePortRanges)}`
                                                 : '留空将自动分配可用端口'
                                         }
                                     />
@@ -2198,4 +2230,4 @@ export default function ForwardList({ userId }: ForwardListProps) {
         </div>
 
     );
-} 
+}

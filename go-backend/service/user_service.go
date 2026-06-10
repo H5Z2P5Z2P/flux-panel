@@ -160,9 +160,14 @@ func (s *UserService) CreateUser(dto dto.UserDto) *result.Result {
 	return result.Ok("用户创建成功")
 }
 
-func (s *UserService) GetAllUsers() *result.Result {
+func (s *UserService) GetAllUsers(queryDto dto.UserQueryDto) *result.Result {
 	var users []model.User
-	global.DB.Where("role_id != ?", 0).Find(&users) // List non-admin
+	query := global.DB.Where("role_id != ?", 0)
+	keyword := strings.TrimSpace(queryDto.Keyword)
+	if keyword != "" {
+		query = query.Where("user LIKE ?", "%"+keyword+"%")
+	}
+	query.Find(&users) // List non-admin
 	return result.Ok(users)
 }
 
@@ -176,6 +181,12 @@ func (s *UserService) UpdateUser(dto dto.UserUpdateDto) *result.Result {
 	if user.RoleId == 0 {
 		return result.Err(-1, "不能修改管理员")
 	}
+
+	oldFlow := user.Flow
+	oldNum := user.Num
+	oldExpTime := user.ExpTime
+	oldFlowResetTime := user.FlowResetTime
+	wasBlocked := userRuntimeBlockReason(&user, time.Now().UnixMilli()) != ""
 
 	// Check name unique
 	var count int64
@@ -210,7 +221,8 @@ func (s *UserService) UpdateUser(dto dto.UserUpdateDto) *result.Result {
 	}
 
 	// Sync limits to UserTunnel
-	go s.SyncLimits(user.ID)
+	s.SyncLimits(user.ID, oldFlow, oldNum, oldExpTime, oldFlowResetTime)
+	s.syncUserForwardRuntimeState(&user, wasBlocked)
 
 	return result.Ok("更新成功")
 }
@@ -316,19 +328,105 @@ func (s *UserService) ResetFlow(req dto.ResetFlowDto) *result.Result {
 
 		// Auto-resume services if user is active and not expired
 		if user.Status == 1 && (user.ExpTime == 0 || user.ExpTime > time.Now().UnixMilli()) {
-			s.resumeUserServices(user.ID, 0)
+			s.resumeUserServices(user.ID, 0, forwardPauseReasonUser)
+			s.resumeUserServices(user.ID, 0, forwardPauseReasonUserTunnel)
 		}
 
 		return result.Ok("账号流量已重置")
 	}
 
-	return result.Err(-1, "不支持隧道流量重置，请重置用户流量")
+	if req.Type == 2 {
+		var userTunnel model.UserTunnel
+		if err := global.DB.First(&userTunnel, req.ID).Error; err != nil {
+			return result.Err(-1, "用户隧道权限不存在")
+		}
+		userTunnel.InFlow = 0
+		userTunnel.OutFlow = 0
+		if err := global.DB.Save(&userTunnel).Error; err != nil {
+			return result.Err(-1, "重置失败")
+		}
+
+		s.resumeUserServices(int64(userTunnel.UserId), userTunnel.TunnelId, forwardPauseReasonUserTunnel)
+
+		return result.Ok("隧道权限流量已重置")
+	}
+
+	return result.Err(-1, "不支持的流量重置类型")
 }
 
 // resumeUserServices resumes paused services for a user.
 // If tunnelId is 0, resumes all services for the user.
 // If tunnelId is specific, only resumes services for that tunnel.
-func (s *UserService) resumeUserServices(userId int64, tunnelId int) {
+func (s *UserService) resumeUserServices(userId int64, tunnelId int, pauseReason int) {
+	var user model.User
+	if err := global.DB.First(&user, userId).Error; err != nil {
+		return
+	}
+	if userRuntimeBlockReason(&user, time.Now().UnixMilli()) != "" {
+		return
+	}
+
+	var forwards []model.Forward
+	query := global.DB.Where("user_id = ?", userId)
+	if tunnelId != 0 {
+		query = query.Where("tunnel_id = ?", tunnelId)
+	}
+	query = query.Where("status = ? AND (pause_reason & ?) != 0", 0, pauseReason)
+	query.Find(&forwards)
+
+	for _, forward := range forwards {
+		forward.PauseReason &^= pauseReason
+		if forward.PauseReason != forwardPauseReasonManual {
+			forward.UpdatedTime = time.Now().UnixMilli()
+			global.DB.Save(&forward)
+			continue
+		}
+
+		var tunnel model.Tunnel
+		if err := global.DB.First(&tunnel, forward.TunnelId).Error; err != nil {
+			continue
+		}
+		if tunnel.Status != 1 {
+			continue
+		}
+		var userTunnel model.UserTunnel
+		if err := global.DB.Where("user_id = ? AND tunnel_id = ?", userId, tunnel.ID).First(&userTunnel).Error; err != nil {
+			continue
+		}
+
+		if userTunnelRuntimeBlockReason(&userTunnel, time.Now().UnixMilli()) != "" {
+			continue
+		}
+
+		var limiter *int
+		if userTunnel.SpeedId != 0 {
+			limiter = &userTunnel.SpeedId
+		}
+		if err := Forward.updateGostServices(&forward, &tunnel, limiter, &userTunnel); err != nil && !isTransientNodeSyncError(err) {
+			continue
+		}
+
+		forward.Status = 1
+		forward.PauseReason = forwardPauseReasonManual
+		forward.UpdatedTime = time.Now().UnixMilli()
+		global.DB.Save(&forward)
+	}
+}
+
+func (s *UserService) syncUserForwardRuntimeState(user *model.User, wasBlocked bool) {
+	if user == nil {
+		return
+	}
+	if userRuntimeBlockReason(user, time.Now().UnixMilli()) != "" {
+		s.pauseUserServices(user.ID, 0)
+		return
+	}
+	if wasBlocked {
+		s.resumeUserServices(user.ID, 0, forwardPauseReasonUser)
+	}
+}
+
+func (s *UserService) pauseUserServices(userId int64, tunnelId int) {
 	var forwards []model.Forward
 	query := global.DB.Where("user_id = ?", userId)
 	if tunnelId != 0 {
@@ -337,43 +435,20 @@ func (s *UserService) resumeUserServices(userId int64, tunnelId int) {
 	query.Find(&forwards)
 
 	for _, forward := range forwards {
-		// Only resume if currently paused (Status 0) - or just force resume?
-		// Logic suggests if we reset flow, we want to ensure it's running.
-		// Taking safely: Check if status is 0, update to 1, and send Resume command.
-		// But wait, if it was manually paused by user, should we resume?
-		// User request says "automatic restore related account/node forwarding on reset".
-		// Usually implies "if it was paused due to flow limit/expiry".
-		// Since we don't track *why* it was paused, we assume reset implies "try to enable".
-
+		if !shouldApplySystemPause(&forward) {
+			continue
+		}
 		var tunnel model.Tunnel
 		if err := global.DB.First(&tunnel, forward.TunnelId).Error; err != nil {
 			continue
 		}
-		// Also check UserTunnel status if we are doing a full user reset (tunnelId==0)
-		// We need the UserTunnel ID for the service name anyway.
 		var userTunnel model.UserTunnel
 		if err := global.DB.Where("user_id = ? AND tunnel_id = ?", userId, tunnel.ID).First(&userTunnel).Error; err != nil {
 			continue
 		}
-
-		// Double check tunnel specific limits if we were coming from a User reset
-		if tunnelId == 0 {
-			if userTunnel.Status != 1 {
-				continue // Skip this specific tunnel if it's invalid
-			}
-		}
-
-		// Proceed to resume
 		serviceName := fmt.Sprintf("%d_%d_%d", forward.ID, userId, userTunnel.ID)
-
-		// 1. Send Resume Command to Node
-		utils.ResumeService(tunnel.InNodeId, serviceName)
-		if tunnel.Type == 2 && tunnel.OutNodeId != 0 {
-			utils.ResumeRemoteService(tunnel.OutNodeId, serviceName)
-		}
-
-		// 2. Update DB Status
-		forward.Status = 1
+		utils.PauseService(tunnel.InNodeId, serviceName)
+		applySystemPauseReason(&forward, forwardPauseReasonUser)
 		global.DB.Save(&forward)
 	}
 }
@@ -404,6 +479,16 @@ func (s *UserService) GetTunnelPermissions(userId int64) []dto.UserTunnelDetailD
 		var tunnel model.Tunnel
 		global.DB.First(&tunnel, rel.TunnelId)
 
+		speedLimitName := ""
+		speed := 0
+		if rel.SpeedId != 0 {
+			var speedLimit model.SpeedLimit
+			if err := global.DB.First(&speedLimit, rel.SpeedId).Error; err == nil {
+				speedLimitName = speedLimit.Name
+				speed = speedLimit.Speed
+			}
+		}
+
 		resultList = append(resultList, dto.UserTunnelDetailDto{
 			ID:             rel.ID,
 			UserId:         rel.UserId,
@@ -417,8 +502,8 @@ func (s *UserService) GetTunnelPermissions(userId int64) []dto.UserTunnelDetailD
 			FlowResetTime:  rel.FlowResetTime,
 			ExpTime:        rel.ExpTime,
 			SpeedId:        rel.SpeedId,
-			SpeedLimitName: "",
-			Speed:          0,
+			SpeedLimitName: speedLimitName,
+			Speed:          speed,
 			Status:         rel.Status,
 		})
 	}
@@ -568,7 +653,7 @@ func (s *UserService) deleteUserRelatedData(user *model.User) error {
 	return nil
 }
 
-func (s *UserService) SyncLimits(userId int64) {
+func (s *UserService) SyncLimits(userId int64, oldFlow int64, oldNum int, oldExpTime int64, oldFlowResetTime int64) {
 	var user model.User
 	if err := global.DB.First(&user, userId).Error; err != nil {
 		return
@@ -578,9 +663,18 @@ func (s *UserService) SyncLimits(userId int64) {
 	global.DB.Where("user_id = ?", userId).Find(&userTunnels)
 
 	for _, ut := range userTunnels {
-		ut.ExpTime = user.ExpTime
-		ut.FlowResetTime = user.FlowResetTime
-		ut.Flow = user.Flow
+		if ut.Flow == oldFlow {
+			ut.Flow = user.Flow
+		}
+		if ut.Num == oldNum {
+			ut.Num = user.Num
+		}
+		if ut.ExpTime == oldExpTime {
+			ut.ExpTime = user.ExpTime
+		}
+		if ut.FlowResetTime == oldFlowResetTime {
+			ut.FlowResetTime = user.FlowResetTime
+		}
 		global.DB.Save(&ut)
 	}
 }

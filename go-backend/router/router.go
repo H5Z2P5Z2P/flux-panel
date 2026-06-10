@@ -47,8 +47,8 @@ func InitRouter() *gin.Engine {
 			user := auth.Group("/user")
 			{
 				user.POST("/create", middleware.RequireRole(0), userController.Create)
-				user.POST("/list", userController.List)
-				user.POST("/update", userController.Update) // Check permission inside controller/service
+				user.POST("/list", middleware.RequireRole(0), userController.List)
+				user.POST("/update", middleware.RequireRole(0), userController.Update)
 				user.POST("/updatePassword", userController.UpdatePassword)
 				user.POST("/delete", middleware.RequireRole(0), userController.Delete)
 				user.POST("/package", userController.Package)
@@ -76,7 +76,7 @@ func InitRouter() *gin.Engine {
 			tunnel := auth.Group("/tunnel")
 			{
 				tunnel.POST("/create", middleware.RequireRole(0), tunnelController.Create)
-				tunnel.POST("/list", tunnelController.List) // All for admin, authorized for user (impl in service)
+				tunnel.POST("/list", middleware.RequireRole(0), tunnelController.List)
 				tunnel.POST("/update", middleware.RequireRole(0), tunnelController.Update)
 				tunnel.POST("/delete", middleware.RequireRole(0), tunnelController.Delete)
 
@@ -138,8 +138,8 @@ func InitRouter() *gin.Engine {
 			configGroup.POST("/get", controller.ViteConfig.GetConfigByName)
 
 			// Admin only
-			configGroup.POST("/update", middleware.Auth(), controller.ViteConfig.UpdateConfigs)
-			configGroup.POST("/update-single", middleware.Auth(), controller.ViteConfig.UpdateConfig)
+			configGroup.POST("/update", middleware.Auth(), middleware.RequireRole(0), controller.ViteConfig.UpdateConfigs)
+			configGroup.POST("/update-single", middleware.Auth(), middleware.RequireRole(0), controller.ViteConfig.UpdateConfig)
 		}
 
 		// Open API

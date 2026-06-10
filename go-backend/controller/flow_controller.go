@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
 	"go-backend/global"
 	"go-backend/model"
 	"go-backend/model/dto"
+	"go-backend/service"
 	"go-backend/utils"
 	"go-backend/websocket"
 
@@ -20,9 +22,11 @@ import (
 type FlowController struct{}
 
 const (
-	SUCCESS_RESPONSE             = "ok"
-	DEFAULT_USER_TUNNEL_ID       = "0"
-	BYTES_TO_GB            int64 = 1024 * 1024 * 1024
+	SUCCESS_RESPONSE                   = "ok"
+	DEFAULT_USER_TUNNEL_ID             = "0"
+	BYTES_TO_GB                  int64 = 1024 * 1024 * 1024
+	forwardPauseReasonUser             = 1
+	forwardPauseReasonUserTunnel       = 2
 )
 
 var (
@@ -43,8 +47,13 @@ func (c *FlowController) Config(ctx *gin.Context) {
 		return
 	}
 
-	var rawData string
-	if err := ctx.ShouldBindJSON(&rawData); err != nil {
+	body, _ := ctx.GetRawData()
+	rawData := strings.TrimSpace(string(body))
+	var rawString string
+	if err := json.Unmarshal(body, &rawString); err == nil {
+		rawData = rawString
+	}
+	if rawData == "" {
 		ctx.String(http.StatusOK, SUCCESS_RESPONSE)
 		return
 	}
@@ -58,15 +67,15 @@ func (c *FlowController) Config(ctx *gin.Context) {
 	}
 
 	// 解析配置
-	var gostConfig dto.GostConfigDto
-	if err := json.Unmarshal([]byte(decryptedData), &gostConfig); err != nil {
+	gostConfig, err := parseGostConfig([]byte(decryptedData))
+	if err != nil {
 		log.Printf("解析配置数据失败: %v", err)
 		ctx.String(http.StatusOK, SUCCESS_RESPONSE)
 		return
 	}
 
 	// 触发异步配置检查（Java 中的 CheckGostConfigAsync）
-	go checkGostConfig(node.ID, &gostConfig)
+	go checkGostConfig(node.ID, gostConfig)
 
 	log.Printf("🔓 节点 %d 配置数据接收成功", node.ID)
 	ctx.String(http.StatusOK, SUCCESS_RESPONSE)
@@ -146,6 +155,35 @@ func decryptIfNeeded(rawData string, secret string) (string, error) {
 	return rawData, nil
 }
 
+func parseGostConfig(data []byte) (*dto.GostConfigDto, error) {
+	var direct dto.GostConfigDto
+	if err := json.Unmarshal(data, &direct); err != nil {
+		return nil, err
+	}
+	if hasGostConfigContent(&direct) {
+		return &direct, nil
+	}
+
+	var wrapped struct {
+		Config dto.GostConfigDto `json:"config"`
+	}
+	if err := json.Unmarshal(data, &wrapped); err != nil {
+		return nil, err
+	}
+	if hasGostConfigContent(&wrapped.Config) {
+		return &wrapped.Config, nil
+	}
+
+	return &direct, nil
+}
+
+func hasGostConfigContent(config *dto.GostConfigDto) bool {
+	if config == nil {
+		return false
+	}
+	return config.Services != nil || config.Chains != nil || config.Limiters != nil
+}
+
 // isValidNode 验证节点密钥
 func isValidNode(secret string) bool {
 	var count int64
@@ -155,28 +193,205 @@ func isValidNode(secret string) bool {
 
 // checkGostConfig 检查 Gost 配置
 func checkGostConfig(nodeId int64, config *dto.GostConfigDto) {
-	// 获取数据库中该节点的所有转发
+	if err := service.Forward.ReconcileNodeConfig(nodeId, config); err != nil {
+		log.Printf("修复节点 %d 配置失败: %v", nodeId, err)
+	}
+	if err := service.Tunnel.ReconcileNodeSharedConfig(nodeId, config); err != nil {
+		log.Printf("修复节点 %d 隧道共享配置失败: %v", nodeId, err)
+	}
+	if err := service.SpeedLimit.ReconcileNodeLimiters(nodeId, config); err != nil {
+		log.Printf("修复节点 %d 限速配置失败: %v", nodeId, err)
+	}
+	if err := cleanupUnexpectedGostConfig(nodeId, config); err != nil {
+		log.Printf("清理节点 %d 多余配置失败: %v", nodeId, err)
+	}
+}
+
+func cleanupUnexpectedGostConfig(nodeId int64, config *dto.GostConfigDto) error {
+	if config == nil {
+		return nil
+	}
+
+	expectedServices, expectedChains, expectedLimiters := buildExpectedGostNames(nodeId)
+	deletedServices := map[string]bool{}
+
+	for _, svc := range config.Services {
+		if !isManagedFluxServiceName(svc.Name) || expectedServices[svc.Name] {
+			continue
+		}
+
+		deleteKey := managedServiceDeleteKey(svc.Name)
+		if deletedServices[deleteKey] {
+			continue
+		}
+		deletedServices[deleteKey] = true
+
+		res := deleteManagedService(nodeId, svc.Name)
+		if res.Msg != "OK" && !isConfigSyncNotFoundMessage(res.Msg) && !isConfigSyncTransientMessage(res.Msg) {
+			return fmt.Errorf("删除多余服务 %s 失败: %s", svc.Name, res.Msg)
+		}
+	}
+
+	for _, chain := range config.Chains {
+		if !isManagedFluxChainName(chain.Name) || expectedChains[chain.Name] {
+			continue
+		}
+
+		baseName := strings.TrimSuffix(chain.Name, "_chains")
+		res := utils.DeleteChains(nodeId, baseName)
+		if res.Msg != "OK" && !isConfigSyncNotFoundMessage(res.Msg) && !isConfigSyncTransientMessage(res.Msg) {
+			return fmt.Errorf("删除多余 Chain %s 失败: %s", chain.Name, res.Msg)
+		}
+	}
+
+	for _, limiter := range config.Limiters {
+		if !isManagedFluxLimiterName(limiter.Name) || expectedLimiters[limiter.Name] {
+			continue
+		}
+
+		limiterId, err := strconv.ParseInt(limiter.Name, 10, 64)
+		if err != nil {
+			continue
+		}
+		res := utils.DeleteLimiters(nodeId, limiterId)
+		if res.Msg != "OK" && !isConfigSyncNotFoundMessage(res.Msg) && !isConfigSyncTransientMessage(res.Msg) {
+			return fmt.Errorf("删除多余限速器 %s 失败: %s", limiter.Name, res.Msg)
+		}
+	}
+
+	return nil
+}
+
+func buildExpectedGostNames(nodeId int64) (map[string]bool, map[string]bool, map[string]bool) {
+	expectedServices := map[string]bool{}
+	expectedChains := map[string]bool{}
+	expectedLimiters := map[string]bool{}
+
 	var forwards []model.Forward
 	global.DB.Joins("JOIN tunnel ON forward.tunnel_id = tunnel.id").
 		Where("tunnel.in_node_id = ?", nodeId).
 		Find(&forwards)
-
-	// 构建期望的服务名列表
-	expectedServices := make(map[string]bool)
 	for _, forward := range forwards {
 		var userTunnel model.UserTunnel
 		global.DB.Where("user_id = ? AND tunnel_id = ?", forward.UserId, forward.TunnelId).First(&userTunnel)
-
 		serviceName := fmt.Sprintf("%d_%d_%d", forward.ID, forward.UserId, userTunnel.ID)
-		expectedServices[serviceName] = true
+		expectedServices[serviceName+"_tcp"] = true
+		expectedServices[serviceName+"_udp"] = true
 	}
 
-	// 检查配置中多余的服务
-	for _, svc := range config.Services {
-		if !expectedServices[svc.Name] && !strings.HasPrefix(svc.Name, "web_api") {
-			log.Printf("⚠️ 发现多余的 Gost 服务: %s，将由节点清理", svc.Name)
+	var inTunnels []model.Tunnel
+	global.DB.Where("type = ? AND status = ? AND in_node_id = ?", 2, 1, nodeId).Find(&inTunnels)
+	for _, tunnel := range inTunnels {
+		expectedChains[utils.BuildTunnelChainName(tunnel.ID)] = true
+	}
+
+	var outTunnels []model.Tunnel
+	global.DB.Where("type = ? AND status = ? AND out_node_id = ?", 2, 1, nodeId).Find(&outTunnels)
+	for _, tunnel := range outTunnels {
+		expectedServices[fmt.Sprintf("tunnel_%d_relay", tunnel.ID)] = true
+	}
+
+	var speedLimits []model.SpeedLimit
+	global.DB.Joins("JOIN tunnel ON speed_limit.tunnel_id = tunnel.id").
+		Where("tunnel.in_node_id = ? AND speed_limit.status = ?", nodeId, 1).
+		Find(&speedLimits)
+	for _, speedLimit := range speedLimits {
+		expectedLimiters[fmt.Sprintf("%d", speedLimit.ID)] = true
+	}
+
+	return expectedServices, expectedChains, expectedLimiters
+}
+
+func deleteManagedService(nodeId int64, name string) *dto.GostDto {
+	if strings.HasPrefix(name, "tunnel_") && strings.HasSuffix(name, "_relay") {
+		tunnelIdText := strings.TrimSuffix(strings.TrimPrefix(name, "tunnel_"), "_relay")
+		if tunnelId, err := strconv.ParseInt(tunnelIdText, 10, 64); err == nil {
+			return utils.DeleteTunnelRelayService(nodeId, tunnelId)
 		}
 	}
+
+	baseName := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(name, "_tcp"), "_udp"), "_tls")
+	if strings.HasSuffix(name, "_tls") {
+		return utils.DeleteRemoteService(nodeId, baseName)
+	}
+	return utils.DeleteService(nodeId, baseName)
+}
+
+func managedServiceDeleteKey(name string) string {
+	if strings.HasPrefix(name, "tunnel_") && strings.HasSuffix(name, "_relay") {
+		return name
+	}
+	if strings.HasSuffix(name, "_tls") {
+		return strings.TrimSuffix(name, "_tls") + ":tls"
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(name, "_tcp"), "_udp") + ":tcpudp"
+}
+
+func isManagedFluxServiceName(name string) bool {
+	if strings.HasPrefix(name, "web_api") {
+		return false
+	}
+	if strings.HasPrefix(name, "tunnel_") && strings.HasSuffix(name, "_relay") {
+		return true
+	}
+	if strings.HasSuffix(name, "_tcp") || strings.HasSuffix(name, "_udp") || strings.HasSuffix(name, "_tls") {
+		baseName := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(name, "_tcp"), "_udp"), "_tls")
+		return isForwardServiceBaseName(baseName)
+	}
+	return isForwardServiceBaseName(name)
+}
+
+func isManagedFluxChainName(name string) bool {
+	if strings.HasPrefix(name, "tunnel_") && strings.HasSuffix(name, "_chains") {
+		return true
+	}
+	baseName := strings.TrimSuffix(name, "_chains")
+	return baseName != name && isForwardServiceBaseName(baseName)
+}
+
+func isManagedFluxLimiterName(name string) bool {
+	_, err := strconv.ParseInt(name, 10, 64)
+	return err == nil
+}
+
+func isForwardServiceBaseName(name string) bool {
+	parts := strings.Split(name, "_")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if _, err := strconv.ParseInt(part, 10, 64); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func isConfigSyncTransientMessage(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	transientMarkers := []string{
+		"节点不在线",
+		"Timeout",
+		"timeout",
+		"connection closed",
+		"节点无响应",
+	}
+	for _, marker := range transientMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isConfigSyncNotFoundMessage(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lowerMsg := strings.ToLower(msg)
+	return strings.Contains(lowerMsg, "not found") || strings.Contains(msg, "不存在")
 }
 
 // processFlowData 处理流量数据
@@ -224,11 +439,9 @@ func processFlowData(flowData *dto.FlowDto) {
 	updateUserFlow(userId, inFlow, outFlow)
 	updateUserTunnelFlow(userTunnelId, inFlow, outFlow)
 
-	// 检查限制并自动暂停
-	serviceName := fmt.Sprintf("%s_%s_%s", forwardId, userId, userTunnelId)
 	if userTunnelId != DEFAULT_USER_TUNNEL_ID {
-		checkUserLimits(userId, serviceName)
-		checkUserTunnelLimits(userTunnelId, serviceName, userId)
+		checkUserLimits(userId)
+		checkUserTunnelLimits(userTunnelId)
 	}
 }
 
@@ -284,7 +497,7 @@ func updateUserTunnelFlow(userTunnelId string, inFlow, outFlow int64) {
 }
 
 // checkUserLimits 检查用户流量和状态限制
-func checkUserLimits(userId string, serviceName string) {
+func checkUserLimits(userId string) {
 	var user model.User
 	if err := global.DB.Where("id = ?", userId).First(&user).Error; err != nil {
 		return
@@ -311,12 +524,12 @@ func checkUserLimits(userId string, serviceName string) {
 	}
 
 	if shouldPause {
-		pauseAllUserForwards(user.ID, serviceName)
+		pauseAllUserForwards(user.ID)
 	}
 }
 
 // checkUserTunnelLimits 检查用户隧道限制
-func checkUserTunnelLimits(userTunnelId string, serviceName string, userId string) {
+func checkUserTunnelLimits(userTunnelId string) {
 	var userTunnel model.UserTunnel
 	if err := global.DB.Where("id = ?", userTunnelId).First(&userTunnel).Error; err != nil {
 		return
@@ -343,46 +556,55 @@ func checkUserTunnelLimits(userTunnelId string, serviceName string, userId strin
 	}
 
 	if shouldPause {
-		pauseTunnelForwards(int64(userTunnel.TunnelId), userId, serviceName)
+		pauseTunnelForwards(int64(userTunnel.TunnelId), int64(userTunnel.UserId))
 	}
 }
 
 // pauseAllUserForwards 暂停用户所有转发
-func pauseAllUserForwards(userId int64, serviceName string) {
+func pauseAllUserForwards(userId int64) {
 	var forwards []model.Forward
 	global.DB.Where("user_id = ?", userId).Find(&forwards)
 
 	for _, forward := range forwards {
-		pauseForwardService(&forward, serviceName)
+		if shouldApplySystemPause(&forward) {
+			pauseForwardService(&forward, forwardPauseReasonUser)
+		}
 	}
 }
 
 // pauseTunnelForwards 暂停隧道下的转发
-func pauseTunnelForwards(tunnelId int64, userId string, serviceName string) {
+func pauseTunnelForwards(tunnelId int64, userId int64) {
 	var forwards []model.Forward
 	global.DB.Where("tunnel_id = ? AND user_id = ?", tunnelId, userId).Find(&forwards)
 
 	for _, forward := range forwards {
-		pauseForwardService(&forward, serviceName)
+		if shouldApplySystemPause(&forward) {
+			pauseForwardService(&forward, forwardPauseReasonUserTunnel)
+		}
 	}
 }
 
+func shouldApplySystemPause(forward *model.Forward) bool {
+	return forward != nil && (forward.Status == 1 || forward.PauseReason != 0)
+}
+
 // pauseForwardService 暂停转发服务
-func pauseForwardService(forward *model.Forward, serviceName string) {
+func pauseForwardService(forward *model.Forward, pauseReason int) {
 	var tunnel model.Tunnel
 	if err := global.DB.First(&tunnel, forward.TunnelId).Error; err != nil {
 		return
 	}
 
+	var userTunnel model.UserTunnel
+	global.DB.Where("user_id = ? AND tunnel_id = ?", forward.UserId, forward.TunnelId).First(&userTunnel)
+	serviceName := fmt.Sprintf("%d_%d_%d", forward.ID, forward.UserId, userTunnel.ID)
+
 	// 暂停入口服务
 	utils.PauseService(tunnel.InNodeId, serviceName)
 
-	// 如果是隧道转发，暂停远程服务
-	if tunnel.Type == 2 {
-		utils.PauseRemoteService(tunnel.OutNodeId, serviceName)
-	}
-
 	// 更新转发状态
 	forward.Status = 0
+	forward.PauseReason |= pauseReason
+	forward.UpdatedTime = utils.CurrentTimeMillis()
 	global.DB.Save(forward)
 }

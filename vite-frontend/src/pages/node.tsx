@@ -20,6 +20,7 @@ import {
   deleteNode,
   getNodeInstallCommand
 } from "@/api";
+import { responseMessage } from "@/utils/response";
 
 interface Node {
   id: number;
@@ -487,7 +488,7 @@ export default function NodePage() {
     try {
       const res = await deleteNode(nodeToDelete.id);
       if (res.code === 0) {
-        toast.success('删除成功');
+        toast.success(responseMessage(res, '节点已移除'));
         setNodeList(prev => prev.filter(n => n.id !== nodeToDelete.id));
         setDeleteModalOpen(false);
         setNodeToDelete(null);
@@ -574,7 +575,7 @@ export default function NodePage() {
 
       const res = await apiCall(data);
       if (res.code === 0) {
-        toast.success(isEdit ? '更新成功' : '创建成功');
+        toast.success(responseMessage(res, isEdit ? '更新成功' : '创建成功'));
         setDialogVisible(false);
 
         if (isEdit) {
@@ -1015,7 +1016,7 @@ export default function NodePage() {
         </ModalContent>
       </Modal>
 
-      {/* 删除确认模态框 */}
+      {/* 节点移除确认模态框 */}
       <Modal
         isOpen={deleteModalOpen}
         onOpenChange={setDeleteModalOpen}
@@ -1028,11 +1029,15 @@ export default function NodePage() {
           {(onClose) => (
             <>
               <ModalHeader className="flex flex-col gap-1">
-                <h2 className="text-xl font-bold">确认删除</h2>
+                <h2 className="text-xl font-bold">确认移除节点</h2>
               </ModalHeader>
               <ModalBody>
-                <p>确定要删除节点 <strong>"{nodeToDelete?.name}"</strong> 吗？</p>
-                <p className="text-small text-default-500">此操作不可恢复，请谨慎操作。</p>
+                <p>确定要移除节点 <strong>"{nodeToDelete?.name}"</strong> 吗？</p>
+                <Alert
+                  color="danger"
+                  variant="flat"
+                  description="移除后会一并删除该节点关联的隧道、转发、限速规则和用户隧道权限，并让原 agent 凭据失效。此操作不可恢复。"
+                />
               </ModalBody>
               <ModalFooter>
                 <Button variant="light" onPress={onClose}>
@@ -1107,4 +1112,4 @@ export default function NodePage() {
     </div>
 
   );
-} 
+}

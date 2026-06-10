@@ -22,6 +22,12 @@ type UserUpdateDto struct {
 	FlowResetTime int64  `json:"flowResetTime"`
 }
 
+type UserQueryDto struct {
+	Keyword string `json:"keyword"`
+	Current int    `json:"current"`
+	Size    int    `json:"size"`
+}
+
 type ChangePasswordDto struct {
 	CurrentPassword string `json:"currentPassword" binding:"required"`
 	NewUsername     string `json:"newUsername" binding:"required"`

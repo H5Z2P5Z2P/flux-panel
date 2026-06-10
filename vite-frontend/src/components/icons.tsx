@@ -192,6 +192,56 @@ export const DeleteIcon = ({
   </svg>
 );
 
+export const ResetIcon = ({
+  size = 24,
+  width,
+  height,
+  ...props
+}: IconSvgProps) => (
+  <svg
+    aria-hidden="true"
+    focusable="false"
+    height={size || height}
+    role="presentation"
+    viewBox="0 0 24 24"
+    width={size || width}
+    {...props}
+  >
+    <path
+      d="M3 12C3 7.03 7.03 3 12 3C14.76 3 17.23 4.24 18.88 6.19"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      fill="none"
+    />
+    <path
+      d="M19 3V6.5H15.5"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      fill="none"
+    />
+    <path
+      d="M21 12C21 16.97 16.97 21 12 21C9.24 21 6.77 19.76 5.12 17.81"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      fill="none"
+    />
+    <path
+      d="M5 21V17.5H8.5"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      fill="none"
+    />
+  </svg>
+);
+
 export const UserIcon = ({
   size = 24,
   width,

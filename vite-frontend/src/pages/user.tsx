@@ -53,12 +53,16 @@ import {
   resetUserFlow,
   getGuestLink
 } from '@/api';
-import { SearchIcon, EditIcon, DeleteIcon, UserIcon, SettingsIcon } from '@/components/icons';
+import { SearchIcon, EditIcon, DeleteIcon, ResetIcon, UserIcon, SettingsIcon } from '@/components/icons';
 import { parseDate } from "@internationalized/date";
+import { responseMessage } from '@/utils/response';
 
 
 // 工具函数
 const formatFlow = (value: number, unit: string = 'bytes'): string => {
+  if (unit === 'gb' && (value === 0 || value === 99999)) {
+    return '不限';
+  }
   if (unit === 'gb') {
     return `${value} GB`;
   } else {
@@ -107,13 +111,21 @@ const calculateTunnelUsedFlow = (tunnel: UserTunnel): number => {
   return inFlow + outFlow;
 };
 
+const buildTunnelDefaults = (user: User | null): UserTunnelForm => ({
+  tunnelId: null,
+  speedId: null,
+  flow: user?.flow ?? 0,
+  num: user?.num ?? 0,
+  expTime: user?.expTime ?? 0,
+  flowResetTime: user?.flowResetTime ?? 0
+});
+
 export default function UserPage() {
   // 状态管理
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState('');
-  // 预加载的游客链接 token，key 为用户 ID
-  const [guestTokens, setGuestTokens] = useState<Record<number, string>>({});
+  const [shareLoadingUsers, setShareLoadingUsers] = useState<Record<number, boolean>>({});
   const [pagination, setPagination] = useState<PaginationType>({
     current: 1,
     size: 10,
@@ -141,10 +153,7 @@ export default function UserPage() {
   const [tunnelListLoading, setTunnelListLoading] = useState(false);
 
   // 分配新隧道权限相关状态
-  const [tunnelForm, setTunnelForm] = useState<UserTunnelForm>({
-    tunnelId: null,
-    speedId: null
-  });
+  const [tunnelForm, setTunnelForm] = useState<UserTunnelForm>(buildTunnelDefaults(null));
   const [assignLoading, setAssignLoading] = useState(false);
 
   // 编辑隧道权限相关状态
@@ -163,6 +172,7 @@ export default function UserPage() {
   // 重置流量确认相关状态
   const { isOpen: isResetFlowModalOpen, onOpen: onResetFlowModalOpen, onClose: onResetFlowModalClose } = useDisclosure();
   const [userToReset, setUserToReset] = useState<User | null>(null);
+  const [tunnelToReset, setTunnelToReset] = useState<UserTunnel | null>(null);
   const [resetFlowLoading, setResetFlowLoading] = useState(false);
 
   // 重置隧道流量确认相关状态
@@ -180,7 +190,7 @@ export default function UserPage() {
     loadUsers();
     loadTunnels();
     loadSpeedLimits();
-  }, [pagination.current, pagination.size, searchKeyword]);
+  }, [pagination.current, pagination.size]);
 
   // 数据加载函数
   const loadUsers = async () => {
@@ -195,8 +205,6 @@ export default function UserPage() {
       if (response.code === 0) {
         const data = response.data || [];
         setUsers(data);
-        // 预加载所有用户的 guest token
-        preloadGuestTokens(data);
       } else {
         toast.error(response.msg || '获取用户列表失败');
       }
@@ -305,7 +313,7 @@ export default function UserPage() {
   };
 
   const handleSubmitUser = async () => {
-    if (!userForm.user || !userForm.expTime) {
+    if (!userForm.user) {
       toast.error('请填写完整信息');
       return;
     }
@@ -314,13 +322,13 @@ export default function UserPage() {
     try {
       const submitData: any = {
         ...userForm,
-        expTime: userForm.expTime.getTime()
+        expTime: userForm.expTime ? userForm.expTime.getTime() : 0
       };
 
       const response = isEdit ? await updateUser(submitData) : await createUser(submitData);
 
       if (response.code === 0) {
-        toast.success(isEdit ? '更新成功' : '创建成功');
+        toast.success(responseMessage(response, isEdit ? '更新成功' : '创建成功'));
         onUserModalClose();
         loadUsers();
       } else {
@@ -336,10 +344,7 @@ export default function UserPage() {
   // 隧道权限管理操作
   const handleManageTunnels = (user: User) => {
     setCurrentUser(user);
-    setTunnelForm({
-      tunnelId: null,
-      speedId: null
-    });
+    setTunnelForm(buildTunnelDefaults(user));
     onTunnelModalOpen();
     loadUserTunnels(user.id);
   };
@@ -355,15 +360,16 @@ export default function UserPage() {
       const response = await assignUserTunnel({
         userId: currentUser.id,
         tunnelId: tunnelForm.tunnelId,
-        speedId: tunnelForm.speedId
+        speedId: tunnelForm.speedId,
+        flow: tunnelForm.flow,
+        num: tunnelForm.num,
+        expTime: tunnelForm.expTime,
+        flowResetTime: tunnelForm.flowResetTime
       });
 
       if (response.code === 0) {
-        toast.success('分配成功');
-        setTunnelForm({
-          tunnelId: null,
-          speedId: null
-        });
+        toast.success(responseMessage(response, '分配成功'));
+        setTunnelForm(buildTunnelDefaults(currentUser));
         loadUserTunnels(currentUser.id);
       } else {
         toast.error(response.msg || '分配失败');
@@ -390,11 +396,15 @@ export default function UserPage() {
       const response = await updateUserTunnel({
         id: editTunnelForm.id,
         speedId: editTunnelForm.speedId,
-        status: editTunnelForm.status
+        status: editTunnelForm.status,
+        flow: editTunnelForm.flow ?? 0,
+        num: editTunnelForm.num ?? 0,
+        expTime: editTunnelForm.expTime ?? 0,
+        flowResetTime: editTunnelForm.flowResetTime ?? 0
       });
 
       if (response.code === 0) {
-        toast.success('更新成功');
+        toast.success(responseMessage(response, '更新成功'));
         onEditTunnelModalClose();
         if (currentUser) {
           loadUserTunnels(currentUser.id);
@@ -437,24 +447,35 @@ export default function UserPage() {
   // 重置流量相关函数
   const handleResetFlow = (user: User) => {
     setUserToReset(user);
+    setTunnelToReset(null);
+    onResetFlowModalOpen();
+  };
+
+  const handleResetTunnelFlow = (userTunnel: UserTunnel) => {
+    setTunnelToReset(userTunnel);
+    setUserToReset(null);
     onResetFlowModalOpen();
   };
 
   const handleConfirmResetFlow = async () => {
-    if (!userToReset) return;
+    if (!userToReset && !tunnelToReset) return;
 
     setResetFlowLoading(true);
     try {
       const response = await resetUserFlow({
-        id: userToReset.id,
-        type: 1 // 1表示重置用户流量
+        id: userToReset?.id ?? tunnelToReset!.id,
+        type: userToReset ? 1 : 2
       });
 
       if (response.code === 0) {
         toast.success('流量重置成功');
         onResetFlowModalClose();
         setUserToReset(null);
-        loadUsers(); // 重新加载用户列表
+        setTunnelToReset(null);
+        if (currentUser && tunnelToReset) {
+          loadUserTunnels(currentUser.id);
+        }
+        loadUsers();
       } else {
         toast.error(response.msg || '重置失败');
       }
@@ -507,35 +528,29 @@ export default function UserPage() {
     }
   };
 
-  // 预加载 guest tokens
-  const preloadGuestTokens = async (userList: User[]) => {
-    const tokens: Record<number, string> = {};
-    await Promise.all(
-      userList.map(async (user) => {
-        try {
-          const response = await getGuestLink(user.id);
-          if (response.code === 0 && response.data) {
-            tokens[user.id] = response.data.token;
-          }
-        } catch {
-          // 忽略单个用户的预加载失败
-        }
-      })
-    );
-    setGuestTokens(tokens);
-  };
+  const handleShare = async (user: User) => {
+    if (shareLoadingUsers[user.id]) return;
 
-  // 同步复制游客链接（使用预加载的 token）
-  const handleShare = (user: User) => {
-    const token = guestTokens[user.id];
-    if (!token) {
-      toast.error("链接正在加载中，请稍后再试");
-      return;
+    setShareLoadingUsers(prev => ({ ...prev, [user.id]: true }));
+    try {
+      const response = await getGuestLink(user.id);
+      if (response.code !== 0 || !response.data?.token) {
+        toast.error(response.msg || "获取链接失败");
+        return;
+      }
+
+      const link = `${window.location.origin}/guest/dashboard?token=${response.data.token}`;
+      await copyToClipboard(link);
+      toast.success("链接已复制到剪贴板");
+    } catch {
+      toast.error("复制失败");
+    } finally {
+      setShareLoadingUsers(prev => {
+        const next = { ...prev };
+        delete next[user.id];
+        return next;
+      });
     }
-    const link = `${window.location.origin}/guest/dashboard?token=${token}`;
-    copyToClipboard(link)
-      .then(() => toast.success("链接已复制到剪贴板"))
-      .catch(() => toast.error("复制失败"));
   };
 
   const availableSpeedLimits = speedLimits.filter(
@@ -648,6 +663,7 @@ export default function UserPage() {
                         size="sm"
                         variant="light"
                         className="text-default-400 min-w-unit-6 w-6 h-6"
+                        isLoading={!!shareLoadingUsers[user.id]}
                         onPress={() => handleShare(user)}
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8m-4-6l-4-4l-4 4m4-4v13" /></svg>
@@ -823,27 +839,29 @@ export default function UserPage() {
               <Input
                 label="流量限制(GB)"
                 type="number"
-                value={userForm.flow.toString()}
-                onChange={(e) => {
-                  const value = Math.min(Math.max(Number(e.target.value) || 0, 1), 99999);
-                  setUserForm(prev => ({ ...prev, flow: value }));
-                }}
-                min="1"
-                max="99999"
-                isRequired
-              />
+	                value={userForm.flow.toString()}
+	                onChange={(e) => {
+	                  const value = Math.min(Math.max(Number(e.target.value) || 0, 0), 99999);
+	                  setUserForm(prev => ({ ...prev, flow: value }));
+	                }}
+	                min="0"
+	                max="99999"
+	                description="0 表示不限流量"
+	                isRequired
+	              />
               <Input
                 label="转发数量"
                 type="number"
-                value={userForm.num.toString()}
-                onChange={(e) => {
-                  const value = Math.min(Math.max(Number(e.target.value) || 0, 1), 99999);
-                  setUserForm(prev => ({ ...prev, num: value }));
-                }}
-                min="1"
-                max="99999"
-                isRequired
-              />
+	                value={userForm.num.toString()}
+	                onChange={(e) => {
+	                  const value = Math.min(Math.max(Number(e.target.value) || 0, 0), 99999);
+	                  setUserForm(prev => ({ ...prev, num: value }));
+	                }}
+	                min="0"
+	                max="99999"
+	                description="0 表示不限数量"
+	                isRequired
+	              />
               <Select
                 label="流量重置日期"
                 selectedKeys={[userForm.flowResetTime.toString()]}
@@ -873,9 +891,9 @@ export default function UserPage() {
                   } else {
                     setUserForm(prev => ({ ...prev, expTime: null }));
                   }
-                }}
-                isRequired
-                showMonthAndYearPickers
+	                }}
+	                description="留空表示永久有效"
+	                showMonthAndYearPickers
                 className="cursor-pointer"
               />
             </div>
@@ -962,6 +980,67 @@ export default function UserPage() {
                         ))
                       ]}
                     </Select>
+
+                    <Input
+                      label="分配流量(GB)"
+                      type="number"
+                      value={tunnelForm.flow.toString()}
+                      onChange={(e) => {
+                        const value = Math.min(Math.max(Number(e.target.value) || 0, 0), 99999);
+                        setTunnelForm(prev => ({ ...prev, flow: value }));
+                      }}
+                      min="0"
+                      max="99999"
+                      description="0 表示不限流量"
+                    />
+
+                    <Input
+                      label="分配转发数量"
+                      type="number"
+                      value={tunnelForm.num.toString()}
+                      onChange={(e) => {
+                        const value = Math.min(Math.max(Number(e.target.value) || 0, 0), 99999);
+                        setTunnelForm(prev => ({ ...prev, num: value }));
+                      }}
+                      min="0"
+                      max="99999"
+                      description="0 表示不限数量"
+                    />
+
+                    <Select
+                      label="流量重置日期"
+                      selectedKeys={[tunnelForm.flowResetTime.toString()]}
+                      onSelectionChange={(keys) => {
+                        const value = Array.from(keys)[0] as string;
+                        setTunnelForm(prev => ({ ...prev, flowResetTime: Number(value) }));
+                      }}
+                    >
+                      <>
+                        <SelectItem key="0" textValue="不重置">
+                          不重置
+                        </SelectItem>
+                        {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                          <SelectItem key={day.toString()} textValue={`每月${day}号（0点重置）`}>
+                            每月{day}号（0点重置）
+                          </SelectItem>
+                        ))}
+                      </>
+                    </Select>
+
+                    <DatePicker
+                      label="过期时间"
+                      value={tunnelForm.expTime > 0 ? parseDate(new Date(tunnelForm.expTime).toISOString().split('T')[0]) as any : null}
+                      onChange={(date) => {
+                        if (date) {
+                          const jsDate = new Date(date.year, date.month - 1, date.day, 23, 59, 59);
+                          setTunnelForm(prev => ({ ...prev, expTime: jsDate.getTime() }));
+                        } else {
+                          setTunnelForm(prev => ({ ...prev, expTime: 0 }));
+                        }
+                      }}
+                      showMonthAndYearPickers
+                      className="cursor-pointer"
+                    />
                   </div>
 
                   <Button
@@ -1008,6 +1087,14 @@ export default function UserPage() {
                                 {formatFlow(calculateTunnelUsedFlow(userTunnel))}
                               </span>
                             </div>
+                            <div className="text-tiny text-default-500">
+                              上限: {userTunnel.flow && userTunnel.flow > 0 ? formatFlow(userTunnel.flow, 'gb') : '不限'}
+                              {' / '}
+                              转发: {userTunnel.num && userTunnel.num > 0 ? userTunnel.num : '不限'}
+                            </div>
+                            <div className="text-tiny text-default-500">
+                              到期: {userTunnel.expTime && userTunnel.expTime > 0 ? formatDate(userTunnel.expTime) : '不限'}
+                            </div>
                           </div>
                         </TableCell>
                         <TableCell>
@@ -1033,19 +1120,31 @@ export default function UserPage() {
                             <Button
                               size="sm"
                               variant="flat"
-                              color="primary"
-                              isIconOnly
-                              onClick={() => handleEditTunnel(userTunnel)}
-                            >
+	                              color="warning"
+	                              isIconOnly
+	                              title="重置隧道流量"
+	                              onClick={() => handleResetTunnelFlow(userTunnel)}
+	                            >
+                              <ResetIcon className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="flat"
+	                              color="primary"
+	                              isIconOnly
+	                              title="编辑隧道权限"
+	                              onClick={() => handleEditTunnel(userTunnel)}
+	                            >
                               <EditIcon className="w-4 h-4" />
                             </Button>
                             <Button
                               size="sm"
                               variant="flat"
-                              color="danger"
-                              isIconOnly
-                              onClick={() => handleRemoveTunnel(userTunnel)}
-                            >
+	                              color="danger"
+	                              isIconOnly
+	                              title="删除隧道权限"
+	                              onClick={() => handleRemoveTunnel(userTunnel)}
+	                            >
                               <DeleteIcon className="w-4 h-4" />
                             </Button>
                           </div>
@@ -1100,6 +1199,67 @@ export default function UserPage() {
                       ))
                     ]}
                   </Select>
+
+                  <Input
+                    label="流量限制(GB)"
+                    type="number"
+                    value={(editTunnelForm.flow ?? 0).toString()}
+                    onChange={(e) => {
+                      const value = Math.min(Math.max(Number(e.target.value) || 0, 0), 99999);
+                      setEditTunnelForm(prev => prev ? { ...prev, flow: value } : null);
+                    }}
+                    min="0"
+                    max="99999"
+                    description="0 表示不限流量"
+                  />
+
+                  <Input
+                    label="转发数量"
+                    type="number"
+                    value={(editTunnelForm.num ?? 0).toString()}
+                    onChange={(e) => {
+                      const value = Math.min(Math.max(Number(e.target.value) || 0, 0), 99999);
+                      setEditTunnelForm(prev => prev ? { ...prev, num: value } : null);
+                    }}
+                    min="0"
+                    max="99999"
+                    description="0 表示不限数量"
+                  />
+
+                  <Select
+                    label="流量重置日期"
+                    selectedKeys={[(editTunnelForm.flowResetTime ?? 0).toString()]}
+                    onSelectionChange={(keys) => {
+                      const value = Array.from(keys)[0] as string;
+                      setEditTunnelForm(prev => prev ? { ...prev, flowResetTime: Number(value) } : null);
+                    }}
+                  >
+                    <>
+                      <SelectItem key="0" textValue="不重置">
+                        不重置
+                      </SelectItem>
+                      {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                        <SelectItem key={day.toString()} textValue={`每月${day}号（0点重置）`}>
+                          每月{day}号（0点重置）
+                        </SelectItem>
+                      ))}
+                    </>
+                  </Select>
+
+                  <DatePicker
+                    label="过期时间"
+                    value={editTunnelForm.expTime && editTunnelForm.expTime > 0 ? parseDate(new Date(editTunnelForm.expTime).toISOString().split('T')[0]) as any : null}
+                    onChange={(date) => {
+                      if (date) {
+                        const jsDate = new Date(date.year, date.month - 1, date.day, 23, 59, 59);
+                        setEditTunnelForm(prev => prev ? { ...prev, expTime: jsDate.getTime() } : null);
+                      } else {
+                        setEditTunnelForm(prev => prev ? { ...prev, expTime: 0 } : null);
+                      }
+                    }}
+                    showMonthAndYearPickers
+                    className="cursor-pointer"
+                  />
                 </div>
 
                 <RadioGroup
@@ -1230,7 +1390,7 @@ export default function UserPage() {
       >
         <ModalContent>
           <ModalHeader className="flex flex-col gap-1">
-            确认重置流量
+            {tunnelToReset ? '确认重置隧道流量' : '确认重置账号流量'}
           </ModalHeader>
           <ModalBody>
             <div className="flex items-center gap-4">
@@ -1241,10 +1401,20 @@ export default function UserPage() {
               </div>
               <div className="flex-1">
                 <p className="text-foreground">
-                  确定要重置用户 <span className="font-semibold text-warning">"{userToReset?.user}"</span> 的流量吗？
+                  {tunnelToReset ? (
+                    <>
+                      确定要重置隧道 <span className="font-semibold text-warning">"{tunnelToReset.tunnelName}"</span> 的权限流量吗？
+                    </>
+                  ) : (
+                    <>
+                      确定要重置用户 <span className="font-semibold text-warning">"{userToReset?.user}"</span> 的流量吗？
+                    </>
+                  )}
                 </p>
                 <p className="text-small text-default-500 mt-1">
-                  该操作只会重置账号流量不会重置隧道权限流量，重置后该用户的上下行流量将归零，此操作不可撤销。
+                  {tunnelToReset
+                    ? '该操作只会重置该隧道权限的上下行流量，不影响账号总流量和其他隧道权限。'
+                    : '该操作会重置账号流量，并同步重置该用户所有授权隧道权限的上下行流量。'}
                 </p>
                 <div className="mt-2 p-2 bg-warning-50 dark:bg-warning-100/10 rounded text-xs">
                   <div className="text-warning-700 dark:text-warning-300">
@@ -1253,16 +1423,16 @@ export default function UserPage() {
                   <div className="mt-1 space-y-1">
                     <div className="flex justify-between">
                       <span>上行流量：</span>
-                      <span className="font-mono">{userToReset ? formatFlow(userToReset.inFlow || 0) : '-'}</span>
+                      <span className="font-mono">{tunnelToReset ? formatFlow(tunnelToReset.inFlow || 0) : (userToReset ? formatFlow(userToReset.inFlow || 0) : '-')}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>下行流量：</span>
-                      <span className="font-mono">{userToReset ? formatFlow(userToReset.outFlow || 0) : '-'}</span>
+                      <span className="font-mono">{tunnelToReset ? formatFlow(tunnelToReset.outFlow || 0) : (userToReset ? formatFlow(userToReset.outFlow || 0) : '-')}</span>
                     </div>
                     <div className="flex justify-between font-medium">
                       <span>总计：</span>
                       <span className="font-mono text-warning-700 dark:text-warning-300">
-                        {userToReset ? formatFlow(calculateUserTotalUsedFlow(userToReset)) : '-'}
+                        {tunnelToReset ? formatFlow(calculateTunnelUsedFlow(tunnelToReset)) : (userToReset ? formatFlow(calculateUserTotalUsedFlow(userToReset)) : '-')}
                       </span>
                     </div>
                   </div>
@@ -1322,4 +1492,4 @@ export default function UserPage() {
     </div >
 
   );
-} 
+}

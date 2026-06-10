@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"time"
 
 	"go-backend/global"
 	"go-backend/model"
@@ -28,6 +29,13 @@ func (s *UserTunnelService) AssignUserTunnel(userTunnelDto dto.UserTunnelDto) *r
 	if err := global.DB.First(&user, userTunnelDto.UserId).Error; err != nil {
 		return result.Err(-1, "用户不存在")
 	}
+	var tunnel model.Tunnel
+	if err := global.DB.First(&tunnel, userTunnelDto.TunnelId).Error; err != nil {
+		return result.Err(-1, "隧道不存在")
+	}
+	if err := s.validateSpeedLimitForTunnel(userTunnelDto.TunnelId, userTunnelDto.SpeedId); err != nil {
+		return result.Err(-1, err.Error())
+	}
 
 	// 创建权限记录，继承用户的流量限制属性
 	userTunnel := model.UserTunnel{
@@ -39,6 +47,18 @@ func (s *UserTunnelService) AssignUserTunnel(userTunnelDto dto.UserTunnelDto) *r
 		FlowResetTime: user.FlowResetTime,
 		ExpTime:       user.ExpTime,
 		Num:           user.Num,
+	}
+	if userTunnelDto.Flow != nil {
+		userTunnel.Flow = *userTunnelDto.Flow
+	}
+	if userTunnelDto.Num != nil {
+		userTunnel.Num = *userTunnelDto.Num
+	}
+	if userTunnelDto.ExpTime != nil {
+		userTunnel.ExpTime = *userTunnelDto.ExpTime
+	}
+	if userTunnelDto.FlowResetTime != nil {
+		userTunnel.FlowResetTime = *userTunnelDto.FlowResetTime
 	}
 
 	if err := global.DB.Create(&userTunnel).Error; err != nil {
@@ -65,16 +85,29 @@ func (s *UserTunnelService) GetUserTunnelList(queryDto dto.UserTunnelQueryDto) *
 	// 扩展隧道信息
 	type UserTunnelDetail struct {
 		model.UserTunnel
-		TunnelName string `json:"tunnelName"`
+		TunnelName     string `json:"tunnelName"`
+		SpeedLimitName string `json:"speedLimitName"`
+		Speed          int    `json:"speed"`
 	}
 
 	var details []UserTunnelDetail
 	for _, ut := range userTunnels {
 		var tunnel model.Tunnel
 		global.DB.First(&tunnel, ut.TunnelId)
+		speedLimitName := ""
+		speed := 0
+		if ut.SpeedId != 0 {
+			var speedLimit model.SpeedLimit
+			if err := global.DB.First(&speedLimit, ut.SpeedId).Error; err == nil {
+				speedLimitName = speedLimit.Name
+				speed = speedLimit.Speed
+			}
+		}
 		details = append(details, UserTunnelDetail{
-			UserTunnel: ut,
-			TunnelName: tunnel.Name,
+			UserTunnel:     ut,
+			TunnelName:     tunnel.Name,
+			SpeedLimitName: speedLimitName,
+			Speed:          speed,
 		})
 	}
 
@@ -109,11 +142,27 @@ func (s *UserTunnelService) UpdateUserTunnel(updateDto dto.UserTunnelUpdateDto) 
 	// 检查限速是否变化
 	oldSpeedId := userTunnel.SpeedId
 	speedChanged := (oldSpeedId != updateDto.SpeedId)
+	wasBlocked := userTunnelRuntimeBlockReason(&userTunnel, time.Now().UnixMilli()) != ""
+	if err := s.validateSpeedLimitForTunnel(int64(userTunnel.TunnelId), updateDto.SpeedId); err != nil {
+		return result.Err(-1, err.Error())
+	}
 
 	// 更新属性
 	userTunnel.SpeedId = updateDto.SpeedId
 	if updateDto.Status != nil {
 		userTunnel.Status = *updateDto.Status
+	}
+	if updateDto.Flow != nil {
+		userTunnel.Flow = *updateDto.Flow
+	}
+	if updateDto.Num != nil {
+		userTunnel.Num = *updateDto.Num
+	}
+	if updateDto.ExpTime != nil {
+		userTunnel.ExpTime = *updateDto.ExpTime
+	}
+	if updateDto.FlowResetTime != nil {
+		userTunnel.FlowResetTime = *updateDto.FlowResetTime
 	}
 
 	if err := global.DB.Save(&userTunnel).Error; err != nil {
@@ -124,6 +173,11 @@ func (s *UserTunnelService) UpdateUserTunnel(updateDto dto.UserTunnelUpdateDto) 
 	if speedChanged {
 		s.updateUserTunnelForwardsSpeed(int64(userTunnel.UserId), int64(userTunnel.TunnelId), updateDto.SpeedId)
 	}
+	if userTunnelRuntimeBlockReason(&userTunnel, time.Now().UnixMilli()) != "" {
+		s.pauseUserTunnelForwards(int64(userTunnel.UserId), int64(userTunnel.TunnelId))
+	} else if wasBlocked {
+		s.resumeUserTunnelForwards(int64(userTunnel.UserId), int64(userTunnel.TunnelId), &userTunnel)
+	}
 
 	return result.Ok("用户隧道权限更新成功")
 }
@@ -133,6 +187,23 @@ func (s *UserTunnelService) CountUserTunnelsByTunnelId(tunnelId int64) int64 {
 	var count int64
 	global.DB.Model(&model.UserTunnel{}).Where("tunnel_id = ?", tunnelId).Count(&count)
 	return count
+}
+
+func (s *UserTunnelService) validateSpeedLimitForTunnel(tunnelId int64, speedId int) error {
+	if speedId == 0 {
+		return nil
+	}
+	var speedLimit model.SpeedLimit
+	if err := global.DB.First(&speedLimit, speedId).Error; err != nil {
+		return fmt.Errorf("限速规则不存在")
+	}
+	if speedLimit.Status != 1 {
+		return fmt.Errorf("限速规则已禁用")
+	}
+	if speedLimit.TunnelId != tunnelId {
+		return fmt.Errorf("限速规则不属于该隧道")
+	}
+	return nil
 }
 
 // --- Private Helper Methods ---
@@ -166,11 +237,33 @@ func (s *UserTunnelService) stopForwardService(forward *model.Forward, userId in
 
 	// 删除主服务
 	utils.DeleteService(tunnel.InNodeId, serviceName)
+}
 
-	// 如果是隧道转发，删除远程服务和链
-	if tunnel.Type == 2 {
-		utils.DeleteRemoteService(tunnel.OutNodeId, serviceName)
-		utils.DeleteChains(tunnel.InNodeId, serviceName)
+// pauseUserTunnelForwards 暂停用户在指定隧道下的所有转发
+func (s *UserTunnelService) pauseUserTunnelForwards(userId int64, tunnelId int64) {
+	var forwards []model.Forward
+	global.DB.Where("user_id = ? AND tunnel_id = ?", userId, tunnelId).Find(&forwards)
+
+	if len(forwards) == 0 {
+		return
+	}
+
+	var tunnel model.Tunnel
+	if err := global.DB.First(&tunnel, tunnelId).Error; err != nil {
+		return
+	}
+
+	var userTunnel model.UserTunnel
+	global.DB.Where("user_id = ? AND tunnel_id = ?", userId, tunnelId).First(&userTunnel)
+
+	for _, forward := range forwards {
+		if !shouldApplySystemPause(&forward) {
+			continue
+		}
+		serviceName := fmt.Sprintf("%d_%d_%d", forward.ID, userId, userTunnel.ID)
+		utils.PauseService(tunnel.InNodeId, serviceName)
+		applySystemPauseReason(&forward, forwardPauseReasonUserTunnel)
+		global.DB.Save(&forward)
 	}
 }
 
@@ -193,6 +286,10 @@ func (s *UserTunnelService) updateUserTunnelForwardsSpeed(userId int64, tunnelId
 
 	for _, forward := range forwards {
 		serviceName := fmt.Sprintf("%d_%d_%d", forward.ID, userId, userTunnel.ID)
+		if forward.Status != 1 {
+			utils.PauseService(tunnel.InNodeId, serviceName)
+			continue
+		}
 		interfaceName := ""
 		if tunnel.Type != 2 {
 			interfaceName = forward.InterfaceName
@@ -202,5 +299,47 @@ func (s *UserTunnelService) updateUserTunnelForwardsSpeed(userId int64, tunnelId
 			speedIdPtr = nil
 		}
 		utils.UpdateService(tunnel.InNodeId, serviceName, forward.InPort, speedIdPtr, forward.RemoteAddr, tunnel.Type, tunnel, forward.Strategy, interfaceName)
+	}
+}
+
+func (s *UserTunnelService) resumeUserTunnelForwards(userId int64, tunnelId int64, userTunnel *model.UserTunnel) {
+	if userTunnel == nil {
+		return
+	}
+
+	var user model.User
+	if err := global.DB.First(&user, userId).Error; err != nil {
+		return
+	}
+	if userRuntimeBlockReason(&user, time.Now().UnixMilli()) != "" {
+		return
+	}
+
+	var tunnel model.Tunnel
+	if err := global.DB.First(&tunnel, tunnelId).Error; err != nil || tunnel.Status != 1 {
+		return
+	}
+
+	var forwards []model.Forward
+	global.DB.Where("user_id = ? AND tunnel_id = ? AND status = ? AND (pause_reason & ?) != 0", userId, tunnelId, 0, forwardPauseReasonUserTunnel).Find(&forwards)
+	for _, forward := range forwards {
+		forward.PauseReason &^= forwardPauseReasonUserTunnel
+		if forward.PauseReason != forwardPauseReasonManual {
+			forward.UpdatedTime = time.Now().UnixMilli()
+			global.DB.Save(&forward)
+			continue
+		}
+
+		var limiter *int
+		if userTunnel.ID != 0 && userTunnel.SpeedId != 0 {
+			limiter = &userTunnel.SpeedId
+		}
+		if err := Forward.updateGostServices(&forward, &tunnel, limiter, userTunnel); err != nil && !isTransientNodeSyncError(err) {
+			continue
+		}
+		forward.Status = 1
+		forward.PauseReason = forwardPauseReasonManual
+		forward.UpdatedTime = time.Now().UnixMilli()
+		global.DB.Save(&forward)
 	}
 }

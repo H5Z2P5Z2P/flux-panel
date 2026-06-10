@@ -38,21 +38,32 @@ func (s *TaskService) RunDailyTasks() {
 }
 
 func (s *TaskService) ResetFlow() {
-	currentDay := time.Now().Day()
-	lastDayOfMonth := time.Date(time.Now().Year(), time.Now().Month()+1, 0, 0, 0, 0, 0, time.Now().Location()).Day()
+	now := time.Now()
+	currentDay := now.Day()
+	lastDayOfMonth := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, now.Location()).Day()
 
 	// 1. Reset User Flow
 	var users []model.User
 	global.DB.Where("flow_reset_time != 0").Find(&users)
 	for _, user := range users {
-		shouldReset := int(user.FlowResetTime) == currentDay
-		if currentDay == lastDayOfMonth && int(user.FlowResetTime) > lastDayOfMonth {
-			shouldReset = true
-		}
-		if shouldReset {
+		if shouldResetFlow(user.FlowResetTime, currentDay, lastDayOfMonth) {
 			user.InFlow = 0
 			user.OutFlow = 0
 			global.DB.Save(&user)
+			User.resumeUserServices(user.ID, 0, forwardPauseReasonUser)
+			User.resumeUserServices(user.ID, 0, forwardPauseReasonUserTunnel)
+		}
+	}
+
+	// 2. Reset independently configured UserTunnel Flow
+	var userTunnels []model.UserTunnel
+	global.DB.Where("flow_reset_time != 0").Find(&userTunnels)
+	for _, userTunnel := range userTunnels {
+		if shouldResetFlow(userTunnel.FlowResetTime, currentDay, lastDayOfMonth) {
+			userTunnel.InFlow = 0
+			userTunnel.OutFlow = 0
+			global.DB.Save(&userTunnel)
+			User.resumeUserServices(int64(userTunnel.UserId), userTunnel.TunnelId, forwardPauseReasonUserTunnel)
 		}
 	}
 }
@@ -62,19 +73,45 @@ func (s *TaskService) CheckExpiry() {
 
 	// 1. Expired Users
 	var users []model.User
-	global.DB.Where("role_id != 0 AND status = 1 AND exp_time < ?", now).Find(&users)
+	global.DB.Where("role_id != 0 AND status = 1 AND exp_time > 0 AND exp_time < ?", now).Find(&users)
 	for _, user := range users {
 		// Pause all forwards
 		var forwards []model.Forward
-		global.DB.Where("user_id = ? AND status = 1", user.ID).Find(&forwards)
+		global.DB.Where("user_id = ?", user.ID).Find(&forwards)
 		for _, forward := range forwards {
+			if !shouldApplySystemPause(&forward) {
+				continue
+			}
 			s.pauseForward(&forward)
-			forward.Status = 0
+			applySystemPauseReason(&forward, forwardPauseReasonUser)
 			global.DB.Save(&forward)
 		}
 		user.Status = 0
 		global.DB.Save(&user)
 	}
+
+	// 2. Expired UserTunnel permissions
+	var userTunnels []model.UserTunnel
+	global.DB.Where("status = 1 AND exp_time > 0 AND exp_time < ?", now).Find(&userTunnels)
+	for _, userTunnel := range userTunnels {
+		var forwards []model.Forward
+		global.DB.Where("user_id = ? AND tunnel_id = ?", userTunnel.UserId, userTunnel.TunnelId).Find(&forwards)
+		for _, forward := range forwards {
+			if !shouldApplySystemPause(&forward) {
+				continue
+			}
+			s.pauseForward(&forward)
+			applySystemPauseReason(&forward, forwardPauseReasonUserTunnel)
+			global.DB.Save(&forward)
+		}
+		userTunnel.Status = 0
+		global.DB.Save(&userTunnel)
+	}
+}
+
+func shouldResetFlow(resetTime int64, currentDay int, lastDayOfMonth int) bool {
+	resetDay := int(resetTime)
+	return resetDay == currentDay || (currentDay == lastDayOfMonth && resetDay > lastDayOfMonth)
 }
 
 func (s *TaskService) pauseForward(forward *model.Forward) {
@@ -93,9 +130,4 @@ func (s *TaskService) pauseForward(forward *model.Forward) {
 
 	// Pause Service on InNode
 	utils.PauseService(tunnel.InNodeId, serviceName)
-
-	// Pause Remote Service if Type 2
-	if tunnel.Type == 2 && tunnel.OutNodeId != 0 {
-		utils.PauseRemoteService(tunnel.OutNodeId, serviceName)
-	}
 }

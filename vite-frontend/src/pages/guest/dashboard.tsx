@@ -80,6 +80,8 @@ export default function GuestDashboardPage() {
     const [addressModalTitle, setAddressModalTitle] = useState('');
     const [addressList, setAddressList] = useState<AddressItem[]>([]);
 
+    const isUnlimitedLimit = (value?: number): boolean => value === 0 || value === 99999;
+
     useEffect(() => {
         if (!token) {
             toast.error("Token is required");
@@ -111,7 +113,7 @@ export default function GuestDashboardPage() {
     };
 
     const formatFlow = (value: number, unit: string = 'bytes'): string => {
-        if (value === 99999) return '无限制';
+        if (unit === 'gb' && isUnlimitedLimit(value)) return '无限制';
         if (unit === 'gb') return value + ' GB';
 
         if (value === 0) return '0 B';
@@ -122,7 +124,7 @@ export default function GuestDashboardPage() {
     };
 
     const formatNumber = (value: number): string => {
-        if (value === 99999) return '无限制';
+        if (isUnlimitedLimit(value)) return '无限制';
         return value.toString();
     };
 
@@ -148,12 +150,12 @@ export default function GuestDashboardPage() {
         if (type === 'flow') {
             const totalUsed = calculateUserTotalUsedFlow();
             const totalLimit = (userInfo.flow || 0) * 1024 * 1024 * 1024;
-            if (userInfo.flow === 99999) return 0;
+            if (isUnlimitedLimit(userInfo.flow)) return 0;
             return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
         } else if (type === 'forwards') {
             const totalUsed = forwardList.length;
             const totalLimit = userInfo.num || 0;
-            if (userInfo.num === 99999) return 0;
+            if (isUnlimitedLimit(userInfo.num)) return 0;
             return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
         }
         return 0;
@@ -189,14 +191,14 @@ export default function GuestDashboardPage() {
     const calculateTunnelFlowPercentage = (tunnel: UserTunnel): number => {
         const totalUsed = calculateTunnelUsedFlow(tunnel);
         const totalLimit = (tunnel.flow || 0) * 1024 * 1024 * 1024;
-        if (tunnel.flow === 99999) return 0;
+        if (isUnlimitedLimit(tunnel.flow)) return 0;
         return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
     };
 
     const calculateTunnelForwardPercentage = (tunnel: UserTunnel): number => {
         const totalUsed = getTunnelUsedForwards(tunnel.tunnelId);
         const totalLimit = tunnel.num || 0;
-        if (tunnel.num === 99999) return 0;
+        if (isUnlimitedLimit(tunnel.num)) return 0;
         return totalLimit > 0 ? Math.min((totalUsed / totalLimit) * 100, 100) : 0;
     };
 
@@ -293,21 +295,6 @@ export default function GuestDashboardPage() {
 
 
 
-
-    const getExpStatus = (expTime?: number) => {
-        if (!expTime) return { color: 'text-green-600 dark:text-green-400', bg: 'bg-green-100 dark:bg-green-500/20', text: '永久' };
-
-        const now = Date.now();
-        if (expTime < now) {
-            return { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-100 dark:bg-red-500/20', text: '已过期' };
-        }
-
-        const diffDays = Math.ceil((expTime - now) / (1000 * 60 * 60 * 24));
-        if (diffDays <= 7) {
-            return { color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-100 dark:bg-orange-500/20', text: `${diffDays}天后过期` };
-        }
-        return { color: 'text-green-600 dark:text-green-400', bg: 'bg-green-100 dark:bg-green-500/20', text: `${diffDays}天后过期` };
-    };
 
     const hasMultipleIps = (ipString: string): boolean => {
         if (!ipString) return false;
@@ -444,10 +431,10 @@ export default function GuestDashboardPage() {
                             </div>
                             <p className="text-base lg:text-xl font-bold text-foreground truncate">{formatFlow(calculateUserTotalUsedFlow())}</p>
                             <div className="mt-1">
-                                {renderProgressBar(calculateUsagePercentage('flow'), 'sm', userInfo.flow === 99999)}
+                                {renderProgressBar(calculateUsagePercentage('flow'), 'sm', isUnlimitedLimit(userInfo.flow))}
                                 <div className="flex items-center justify-between mt-1">
                                     <p className="text-xs text-default-500 truncate">
-                                        {userInfo.flow === 99999 ? '无限制' : `${calculateUsagePercentage('flow').toFixed(1)}%`}
+                                        {isUnlimitedLimit(userInfo.flow) ? '无限制' : `${calculateUsagePercentage('flow').toFixed(1)}%`}
                                     </p>
                                     {(userInfo.flowResetTime !== undefined && userInfo.flowResetTime !== null) && (
                                         <div className="text-xs text-default-500 flex items-center gap-1">
@@ -492,9 +479,9 @@ export default function GuestDashboardPage() {
                             </div>
                             <p className="text-base lg:text-xl font-bold text-foreground truncate">{forwardList.length}</p>
                             <div className="mt-1">
-                                {renderProgressBar(calculateUsagePercentage('forwards'), 'sm', userInfo.num === 99999)}
+                                {renderProgressBar(calculateUsagePercentage('forwards'), 'sm', isUnlimitedLimit(userInfo.num))}
                                 <p className="text-xs text-default-500 mt-1 truncate">
-                                    {userInfo.num === 99999 ? '无限制' : `${calculateUsagePercentage('forwards').toFixed(1)}%`}
+                                    {isUnlimitedLimit(userInfo.num) ? '无限制' : `${calculateUsagePercentage('forwards').toFixed(1)}%`}
                                 </p>
                             </div>
                         </div>
@@ -593,7 +580,7 @@ export default function GuestDashboardPage() {
                     <CardBody className="pt-0">
                         <div className="space-y-3">
                             {userTunnels.map((tunnel) => {
-                                const tunnelExpStatus = getExpStatus(tunnel.expTime);
+                                const tunnelExpStatus = getExpireStatus(tunnel.expTime);
                                 return (
                                     <div key={tunnel.id} className="border border-gray-200 dark:border-default-100 rounded-lg p-3 lg:p-4 hover:shadow-md transition-shadow">
                                         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-3">
@@ -624,7 +611,7 @@ export default function GuestDashboardPage() {
                                                 <p className="text-sm text-default-600 mb-1">已用流量</p>
                                                 <p className="font-semibold text-foreground">{formatFlow(calculateTunnelUsedFlow(tunnel))}</p>
                                                 <div className="mt-1">
-                                                    {renderProgressBar(calculateTunnelFlowPercentage(tunnel), 'sm', tunnel.flow === 99999)}
+                                                    {renderProgressBar(calculateTunnelFlowPercentage(tunnel), 'sm', isUnlimitedLimit(tunnel.flow))}
                                                 </div>
                                             </div>
                                             <div>
@@ -635,7 +622,7 @@ export default function GuestDashboardPage() {
                                                 <p className="text-sm text-default-600 mb-1">已用转发</p>
                                                 <p className="font-semibold text-foreground">{getTunnelUsedForwards(tunnel.tunnelId)}</p>
                                                 <div className="mt-1">
-                                                    {renderProgressBar(calculateTunnelForwardPercentage(tunnel), 'sm', tunnel.num === 99999)}
+                                                    {renderProgressBar(calculateTunnelForwardPercentage(tunnel), 'sm', isUnlimitedLimit(tunnel.num))}
                                                 </div>
                                             </div>
                                         </div>

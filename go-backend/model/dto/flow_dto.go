@@ -13,6 +13,8 @@ type FlowDto struct {
 // GostConfigDto Gost 配置数据结构
 type GostConfigDto struct {
 	Services []GostService `json:"services"`
+	Chains   []GostChain   `json:"chains"`
+	Limiters []GostLimiter `json:"limiters"`
 }
 
 // GostService Gost 服务配置
@@ -21,4 +23,13 @@ type GostService struct {
 	Addr     string                 `json:"addr"`
 	Handler  map[string]interface{} `json:"handler"`
 	Listener map[string]interface{} `json:"listener"`
+	Metadata map[string]interface{} `json:"metadata"`
+}
+
+type GostChain struct {
+	Name string `json:"name"`
+}
+
+type GostLimiter struct {
+	Name string `json:"name"`
 }

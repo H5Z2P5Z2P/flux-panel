@@ -51,6 +51,27 @@ var Manager = &WSManager{
 	PendingRequests: make(map[string]chan dto.GostDto),
 }
 
+var sendMsgHook func(nodeId int64, data interface{}, msgType string) *dto.GostDto
+
+func SetSendMsgHookForTest(hook func(nodeId int64, data interface{}, msgType string) *dto.GostDto) {
+	sendMsgHook = hook
+}
+
+func DisconnectNode(nodeId int64) {
+	Manager.mu.Lock()
+	client, ok := Manager.NodeSessions[nodeId]
+	if ok {
+		delete(Manager.NodeSessions, nodeId)
+	}
+	Manager.mu.Unlock()
+
+	if ok && client != nil {
+		client.Valid = false
+		client.Conn.Close()
+		Manager.broadcastStatus(strconv.FormatInt(nodeId, 10), 0)
+	}
+}
+
 func (m *WSManager) Register(client *Client) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -337,6 +358,10 @@ func (c *Client) SendEncrypted(msg string) error {
 
 // SendMsg to Node with Timeout
 func SendMsg(nodeId int64, data interface{}, msgType string) *dto.GostDto {
+	if sendMsgHook != nil {
+		return sendMsgHook(nodeId, data, msgType)
+	}
+
 	// Find Client
 	Manager.mu.RLock()
 	client, ok := Manager.NodeSessions[nodeId]

@@ -5,6 +5,7 @@ type Forward struct {
 	CreatedTime   int64  `json:"createdTime"`
 	UpdatedTime   int64  `json:"updatedTime"`
 	Status        int    `json:"status"`
+	PauseReason   int    `json:"pauseReason"`
 	UserId        int64  `json:"userId"`
 	UserName      string `json:"userName"`
 	Name          string `json:"name"`

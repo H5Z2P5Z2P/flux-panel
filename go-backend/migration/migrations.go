@@ -26,6 +26,12 @@ func migrate002NodePortRanges(db *gorm.DB) error {
 		}
 	}
 
+	hasPortStart := columnExists(db, "node", "port_sta")
+	hasPortEnd := columnExists(db, "node", "port_end")
+	if !hasPortStart || !hasPortEnd {
+		return nil
+	}
+
 	// 2. 将旧数据迁移到新格式
 	// 使用 CASE 处理 port_sta == port_end 的情况
 	migrateSql := `
@@ -41,6 +47,13 @@ func migrate002NodePortRanges(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func migrate003ForwardPauseReason(db *gorm.DB) error {
+	if columnExists(db, "forward", "pause_reason") {
+		return nil
+	}
+	return db.Exec("ALTER TABLE forward ADD COLUMN pause_reason INTEGER DEFAULT 0").Error
 }
 
 // columnExists 检查列是否存在 (SQLite)

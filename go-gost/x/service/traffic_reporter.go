@@ -12,6 +12,7 @@ import (
 	"github.com/go-gost/core/observer/stats"
 	"github.com/go-gost/x/config"
 	"github.com/go-gost/x/internal/util/crypto"
+	"github.com/go-gost/x/internal/util/paneladdr"
 	"github.com/go-gost/x/registry"
 )
 
@@ -30,8 +31,9 @@ type TrafficReportItem struct {
 }
 
 func SetHTTPReportURL(addr string, secret string) {
-	httpReportURL = "https://" + addr + "/flow/upload?secret=" + secret
-	configReportURL = "https://" + addr + "/flow/config?secret=" + secret
+	endpoint := paneladdr.Resolve(addr)
+	httpReportURL = endpoint.HTTPBase + "/flow/upload?secret=" + secret
+	configReportURL = endpoint.HTTPBase + "/flow/config?secret=" + secret
 
 	// 创建 AES 加密器
 	var err error

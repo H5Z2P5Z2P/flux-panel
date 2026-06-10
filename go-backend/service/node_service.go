@@ -35,7 +35,7 @@ func (s *NodeService) CreateNode(dto dto.NodeDto) *result.Result {
 		Tls:         dto.Tls,
 		Socks:       dto.Socks,
 		Secret:      &secret,
-		Status:      0, // Active
+		Status:      0, // Offline until the agent connects
 		CreatedTime: time.Now().UnixMilli(),
 		UpdatedTime: time.Now().UnixMilli(),
 	}
@@ -61,6 +61,7 @@ func (s *NodeService) UpdateNode(dto dto.NodeUpdateDto) *result.Result {
 		return result.Err(-1, "节点不存在")
 	}
 
+	oldNode := node
 	if dto.PortRanges != "" {
 		if err := utils.ValidatePortRangesString(dto.PortRanges); err != nil {
 			return result.Err(-1, err.Error())
@@ -68,8 +69,11 @@ func (s *NodeService) UpdateNode(dto dto.NodeUpdateDto) *result.Result {
 		node.PortRanges = dto.PortRanges
 	}
 
-	if err := s.syncNodeProtocolIfNeeded(&node, dto); err != nil {
+	protocolSyncDeferred := false
+	if deferred, err := s.syncNodeProtocolIfNeeded(&node, dto); err != nil {
 		return result.Err(-1, err.Error())
+	} else {
+		protocolSyncDeferred = deferred
 	}
 
 	node.Name = dto.Name
@@ -99,20 +103,26 @@ func (s *NodeService) UpdateNode(dto dto.NodeUpdateDto) *result.Result {
 	if err != nil {
 		return result.Err(-1, "节点更新失败: "+err.Error())
 	}
+	relatedSyncMsg := s.syncRelatedConfigsAfterNodeUpdate(&oldNode, &node)
+	if protocolSyncDeferred || strings.Contains(relatedSyncMsg, "自动同步") {
+		return result.OkMsg("节点更新成功，配置已保存，节点恢复后将自动同步")
+	}
+	if relatedSyncMsg != "" {
+		return result.OkMsg(relatedSyncMsg)
+	}
 	return result.Ok("节点更新成功")
 }
 
 func (s *NodeService) DeleteNode(id int64) *result.Result {
-	var count int64
-	global.DB.Model(&model.Tunnel{}).Where("in_node_id = ? OR out_node_id = ?", id, id).Count(&count)
-	if count > 0 {
-		return result.Err(-1, fmt.Sprintf("该节点还有 %d 个隧道在使用，请先删除相关隧道", count))
+	var node model.Node
+	if err := global.DB.First(&node, id).Error; err != nil {
+		return result.Err(-1, "节点不存在")
 	}
 
-	if err := global.DB.Delete(&model.Node{}, id).Error; err != nil {
-		return result.Err(-1, "节点删除失败")
+	if err := s.cleanupNodeRelations(&node); err != nil {
+		return result.Err(-1, "节点删除失败: "+err.Error())
 	}
-	return result.Ok("节点删除成功")
+	return result.Ok("节点已移除，关联隧道、转发、限速和权限已清理")
 }
 
 func (s *NodeService) GetInstallCommand(id int64) *result.Result {
@@ -136,9 +146,9 @@ func (s *NodeService) GetInstallCommand(id int64) *result.Result {
 	return result.Ok(cmd)
 }
 
-func (s *NodeService) syncNodeProtocolIfNeeded(node *model.Node, req dto.NodeUpdateDto) error {
+func (s *NodeService) syncNodeProtocolIfNeeded(node *model.Node, req dto.NodeUpdateDto) (bool, error) {
 	if node.Status != 1 {
-		return nil
+		return false, nil
 	}
 
 	httpChanged := req.Http != node.Http
@@ -146,7 +156,7 @@ func (s *NodeService) syncNodeProtocolIfNeeded(node *model.Node, req dto.NodeUpd
 	socksChanged := req.Socks != node.Socks
 
 	if !httpChanged && !tlsChanged && !socksChanged {
-		return nil
+		return false, nil
 	}
 
 	payload := map[string]interface{}{
@@ -156,10 +166,131 @@ func (s *NodeService) syncNodeProtocolIfNeeded(node *model.Node, req dto.NodeUpd
 	}
 	res := websocket.SendMsg(node.ID, payload, "SetProtocol")
 	if res == nil {
-		return fmt.Errorf("同步节点协议失败: 节点无响应")
+		return true, nil
 	}
 	if res.Msg != "OK" {
-		return fmt.Errorf("同步节点协议失败: %s", res.Msg)
+		if isTransientNodeSyncMessage(res.Msg) {
+			return true, nil
+		}
+		return false, fmt.Errorf("同步节点协议失败: %s", res.Msg)
 	}
+	return false, nil
+}
+
+func (s *NodeService) syncRelatedConfigsAfterNodeUpdate(oldNode *model.Node, node *model.Node) string {
+	if oldNode == nil || node == nil {
+		return ""
+	}
+
+	ipChanged := oldNode.Ip != node.Ip || oldNode.ServerIp != node.ServerIp
+	if !ipChanged {
+		return ""
+	}
+
+	syncDeferred := false
+
+	var inForwards []model.Forward
+	global.DB.Joins("JOIN tunnel ON forward.tunnel_id = tunnel.id").
+		Where("tunnel.in_node_id = ? AND forward.status = ?", node.ID, 1).
+		Find(&inForwards)
+	for _, forward := range inForwards {
+		var tunnel model.Tunnel
+		if err := global.DB.First(&tunnel, forward.TunnelId).Error; err != nil {
+			continue
+		}
+		var userTunnel model.UserTunnel
+		global.DB.Where("user_id = ? AND tunnel_id = ?", forward.UserId, forward.TunnelId).First(&userTunnel)
+		var limiter *int
+		if userTunnel.ID != 0 {
+			limiter = &userTunnel.SpeedId
+		}
+		if err := Forward.updateGostServices(&forward, &tunnel, limiter, &userTunnel); err != nil {
+			if isTransientNodeSyncError(err) {
+				syncDeferred = true
+				continue
+			}
+			fmt.Printf("[NodeUpdate] 同步转发 %d 失败: %v\n", forward.ID, err)
+		}
+	}
+
+	var affectedType2Tunnels []model.Tunnel
+	global.DB.Where("type = ? AND status = ? AND (in_node_id = ? OR out_node_id = ?)", 2, 1, node.ID, node.ID).Find(&affectedType2Tunnels)
+	for _, tunnel := range affectedType2Tunnels {
+		if err := Tunnel.updateTunnelSharedServices(&tunnel); err != nil {
+			if isTransientNodeSyncError(err) {
+				syncDeferred = true
+				continue
+			}
+			fmt.Printf("[NodeUpdate] 同步隧道 %d 共享配置失败: %v\n", tunnel.ID, err)
+		}
+	}
+
+	if syncDeferred {
+		return "节点更新成功，关联配置已保存，节点恢复后将自动同步"
+	}
+	return "节点更新成功，关联隧道和转发配置已同步"
+}
+
+func (s *NodeService) cleanupNodeRelations(node *model.Node) error {
+	var tunnels []model.Tunnel
+	if err := global.DB.Where("in_node_id = ? OR out_node_id = ?", node.ID, node.ID).Find(&tunnels).Error; err != nil {
+		return err
+	}
+
+	tunnelIds := make([]int64, 0, len(tunnels))
+	tunnelByID := make(map[int64]model.Tunnel, len(tunnels))
+	for _, tunnel := range tunnels {
+		tunnelIds = append(tunnelIds, tunnel.ID)
+		tunnelByID[tunnel.ID] = tunnel
+	}
+
+	var forwards []model.Forward
+	if len(tunnelIds) > 0 {
+		if err := global.DB.Where("tunnel_id IN ?", tunnelIds).Find(&forwards).Error; err != nil {
+			return err
+		}
+	}
+
+	for _, forward := range forwards {
+		tunnel, ok := tunnelByID[forward.TunnelId]
+		if !ok {
+			continue
+		}
+		var userTunnel model.UserTunnel
+		global.DB.Where("user_id = ? AND tunnel_id = ?", forward.UserId, forward.TunnelId).First(&userTunnel)
+		_ = Forward.deleteGostServices(&forward, &tunnel, &userTunnel)
+	}
+	for _, tunnel := range tunnels {
+		if tunnel.Type == 2 {
+			_ = Tunnel.deleteTunnelSharedServices(&tunnel)
+		}
+	}
+
+	err := global.DB.Transaction(func(tx *gorm.DB) error {
+		if len(tunnelIds) > 0 {
+			if err := tx.Where("tunnel_id IN ?", tunnelIds).Delete(&model.Forward{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("tunnel_id IN ?", tunnelIds).Delete(&model.UserTunnel{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("tunnel_id IN ?", tunnelIds).Delete(&model.SpeedLimit{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", tunnelIds).Delete(&model.Tunnel{}).Error; err != nil {
+				return err
+			}
+		}
+
+		if err := tx.Delete(&model.Node{}, node.ID).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	websocket.DisconnectNode(node.ID)
 	return nil
 }

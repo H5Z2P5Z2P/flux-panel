@@ -1,65 +1,51 @@
 package tests
 
 import (
-	"fmt"
 	"go-backend/config"
 	"go-backend/global"
 	"go-backend/model"
 	"go-backend/utils"
-	"io"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 const (
-	SourceDBPath = "../../data/flux.db"
-	TestDBPath   = "./flux_test.db"
+	TestDBPath = "file:flux_test?mode=memory&cache=shared"
 )
 
-// SetupTestDB initializes the test DB by copying the real DB
+// SetupTestDB initializes an isolated in-memory DB for deterministic tests.
 func SetupTestDB() {
-	// 1. Copy real DB to test DB
-	sourceFile, err := os.Open(SourceDBPath)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to open source DB at %s: %v", SourceDBPath, err))
-	}
-	defer sourceFile.Close()
-
-	destFile, err := os.Create(TestDBPath)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to create test DB at %s: %v", TestDBPath, err))
-	}
-	defer destFile.Close()
-
-	_, err = io.Copy(destFile, sourceFile)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to copy DB: %v", err))
-	}
-
-	// 2. Configure App to use the test DB
-	absPath, _ := filepath.Abs(TestDBPath)
 	config.AppConfig.Database.Type = "sqlite"
-	config.AppConfig.Database.Name = absPath
+	config.AppConfig.Database.Name = TestDBPath
 	config.AppConfig.Server.Port = 8888
 
-	// 3. Initialize GORM with the test DB
-	global.DB, err = gorm.Open(sqlite.Open(config.AppConfig.Database.Name), &gorm.Config{})
+	var err error
+	global.DB, err = gorm.Open(sqlite.Open(config.AppConfig.Database.Name), &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{SingularTable: true},
+	})
 	if err != nil {
-		panic(fmt.Sprintf("Failed to connect to test DB: %v", err))
+		panic(err)
 	}
 
-	// No AutoMigrate - we are using the real schema
-	fmt.Println("✅ Test DB Initialized from data/flux.db")
-
-	// Verify or Create Default Node (ID: 1) for testing
-	var node model.Node
-	if err := global.DB.First(&node, 1).Error; err != nil {
-		CreateTestNode(1, "Test Node")
+	if err := global.DB.AutoMigrate(
+		&model.User{},
+		&model.Node{},
+		&model.Tunnel{},
+		&model.Forward{},
+		&model.SpeedLimit{},
+		&model.UserTunnel{},
+		&model.StatisticsFlow{},
+		&model.ViteConfig{},
+		&model.GuestLink{},
+	); err != nil {
+		panic(err)
 	}
+
+	CreateTestNode(1, "Test Node")
 }
 
 // TeardownTestDB cleans up
@@ -68,8 +54,6 @@ func TeardownTestDB() {
 	if err == nil {
 		sqlDB.Close()
 	}
-	// Remove temporary test DB
-	os.Remove(TestDBPath)
 }
 
 func TestMain(m *testing.M) {
@@ -119,10 +103,12 @@ func CreateTestTunnel(name string) *model.Tunnel {
 // Helper to create a node
 func CreateTestNode(id int64, name string) *model.Node {
 	node := model.Node{
-		ID:     id,
-		Name:   name,
-		Status: 1,
-		Ip:     "127.0.0.1",
+		ID:         id,
+		Name:       name,
+		Status:     1,
+		Ip:         "127.0.0.1",
+		ServerIp:   "127.0.0.1",
+		PortRanges: "10000-65535",
 	}
 	global.DB.Create(&node)
 	return &node

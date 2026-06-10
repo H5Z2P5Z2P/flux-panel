@@ -55,15 +55,23 @@ func UpdateService(nodeId int64, name string, inPort int, limiter *int, remoteAd
 }
 
 func DeleteService(nodeId int64, name string) *dto.GostDto {
+	return DeleteServiceNames(nodeId, []string{name + "_tcp", name + "_udp"})
+}
+
+func DeleteServiceNames(nodeId int64, services []string) *dto.GostDto {
 	data := map[string]interface{}{
-		"services": []string{name + "_tcp", name + "_udp"},
+		"services": services,
 	}
 	return websocket.SendMsg(nodeId, data, "DeleteService")
 }
 
 func PauseService(nodeId int64, name string) *dto.GostDto {
+	return PauseServiceNames(nodeId, []string{name + "_tcp", name + "_udp"})
+}
+
+func PauseServiceNames(nodeId int64, services []string) *dto.GostDto {
 	data := map[string]interface{}{
-		"services": []string{name + "_tcp", name + "_udp"},
+		"services": services,
 	}
 	return websocket.SendMsg(nodeId, data, "PauseService")
 }
@@ -355,6 +363,10 @@ func createNodes(remoteAddr string) []map[string]interface{} {
 	split := strings.Split(remoteAddr, ",")
 	num := 1
 	for _, addr := range split {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			continue
+		}
 		nodes = append(nodes, map[string]interface{}{
 			"name": fmt.Sprintf("node_%d", num),
 			"addr": addr,
@@ -365,8 +377,14 @@ func createNodes(remoteAddr string) []map[string]interface{} {
 }
 
 func strategyStr(s string) string {
-	if s == "" {
+	strategy := strings.ToLower(strings.TrimSpace(s))
+	if strategy == "" {
 		return "fifo"
 	}
-	return s
+	switch strategy {
+	case "rr", "roundrobin", "round-robin":
+		return "round"
+	default:
+		return strategy
+	}
 }

@@ -29,15 +29,10 @@ export const getNodeList = () => Network.post("/node/list");
 export const updateNode = (data: any) => Network.post("/node/update", data);
 export const deleteNode = (id: number) => Network.post("/node/delete", { id });
 export const getNodeInstallCommand = (id: number) => Network.post("/node/install", { id });
-export const checkNodeStatus = (nodeId?: number) => {
-  const params = nodeId ? { nodeId } : {};
-  return Network.post("/node/check-status", params);
-};
 
 // 隧道CRUD操作 - 全部使用POST请求
 export const createTunnel = (data: any) => Network.post("/tunnel/create", data);
 export const getTunnelList = () => Network.post("/tunnel/list");
-export const getTunnelById = (id: number) => Network.post("/tunnel/get", { id });
 export const updateTunnel = (data: any) => Network.post("/tunnel/update", data);
 export const deleteTunnel = (id: number) => Network.post("/tunnel/delete", { id });
 export const diagnoseTunnel = (tunnelId: number) => Network.post("/tunnel/diagnose", { tunnelId });
@@ -92,4 +87,4 @@ export const verifyCaptcha = (data: { captchaId: string; trackData: string }) =>
 
 // 访客相关接口
 export const getGuestLink = (userId?: number) => Network.get("/user/guest_link", userId ? { userId } : {});
-export const getGuestDashboard = (token: string) => Network.get(`/guest/dashboard`, { token }); 
+export const getGuestDashboard = (token: string) => Network.get(`/guest/dashboard`, { token });
