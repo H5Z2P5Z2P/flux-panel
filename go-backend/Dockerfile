@@ -17,8 +17,7 @@ FROM alpine:latest
 
 WORKDIR /app
 
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /app/flux-panel-backend .
 # 复制默认配置文件（如果存在）
